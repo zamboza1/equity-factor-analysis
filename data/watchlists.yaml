@@ -1,0 +1,112 @@
+# Stock watchlists for correlation analysis
+# The 'default' list is used for correlation anomaly detection
+
+# Default comparison set - Major ETFs and diversified stocks
+default:
+  - SPY   # S&P 500 ETF
+  - QQQ   # Nasdaq 100 ETF
+  - TLT   # 20+ Year Treasury Bond ETF
+  - GLD   # Gold ETF
+  - IWM   # Russell 2000 ETF (small caps)
+  - XLF   # Financial Select Sector
+  - XLE   # Energy Select Sector
+  - XLK   # Technology Select Sector
+  - VIX   # Volatility Index (note: may not have price data)
+
+# S&P 100 major constituents (OEX)
+# These provide broad market coverage for correlation analysis
+sp100:
+  # Technology
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - META
+  - NVDA
+  - TSLA
+  - AVGO
+  - ORCL
+  - CRM
+  - AMD
+  - INTC
+  - CSCO
+  - ADBE
+  - IBM
+  # Financial
+  - JPM
+  - BAC
+  - WFC
+  - GS
+  - MS
+  - BLK
+  - C
+  - AXP
+  # Healthcare
+  - UNH
+  - JNJ
+  - PFE
+  - MRK
+  - ABBV
+  - LLY
+  - TMO
+  - ABT
+  # Consumer
+  - WMT
+  - HD
+  - PG
+  - KO
+  - PEP
+  - COST
+  - MCD
+  - NKE
+  - SBUX
+  # Industrial
+  - BA
+  - CAT
+  - GE
+  - HON
+  - UPS
+  - RTX
+  - LMT
+  # Energy
+  - XOM
+  - CVX
+  - COP
+  # Communication
+  - VZ
+  - T
+  - NFLX
+  - DIS
+  - CMCSA
+  # Other
+  - BRK.B
+  - V
+  - MA
+  - PYPL
+
+# Sector ETFs for sector correlation
+sector_etfs:
+  - XLB   # Materials
+  - XLC   # Communication Services
+  - XLE   # Energy
+  - XLF   # Financials
+  - XLI   # Industrials
+  - XLK   # Technology
+  - XLP   # Consumer Staples
+  - XLRE  # Real Estate
+  - XLU   # Utilities
+  - XLV   # Health Care
+  - XLY   # Consumer Discretionary
+
+# Macro assets for cross-asset correlation
+macro:
+  - SPY   # US Equities
+  - TLT   # Long-term Treasuries
+  - IEF   # Intermediate Treasuries
+  - GLD   # Gold
+  - SLV   # Silver
+  - USO   # Oil
+  - UUP   # US Dollar
+  - EEM   # Emerging Markets
+  - EFA   # Developed Markets ex-US
+  - VNQ   # Real Estate

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["backend"]
+
+[tool.setuptools.package-data]
+backend = ["py.typed"]
+
+[project]
+name = "stock-factor-analysis"
+version = "0.1.0"
+description = "A research tool for analyzing stock factor exposures, correlation anomalies, macro event impacts, and options volatility surfaces"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Willis Yorick Zambo Zambo"}
+]
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "statsmodels>=0.14.0",
+    "yfinance>=0.2.0",
+    "matplotlib>=3.7.0",
+    "scipy>=1.10.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "jinja2>=3.1.0",
+    "pandas-datareader>=0.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+analysis = "backend.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+

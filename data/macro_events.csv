@@ -1,0 +1,10 @@
+event_name,event_date,event_time_et,timezone,source
+CPI,2024-12-10,08:30,US/Eastern,BLS
+CPI,2024-11-12,08:30,US/Eastern,BLS
+CPI,2024-10-10,08:30,US/Eastern,BLS
+FOMC,2024-12-18,14:00,US/Eastern,Fed
+FOMC,2024-11-07,14:00,US/Eastern,Fed
+FOMC,2024-10-30,14:00,US/Eastern,Fed
+NFP,2024-12-06,08:30,US/Eastern,BLS
+NFP,2024-11-01,08:30,US/Eastern,BLS
+NFP,2024-10-04,08:30,US/Eastern,BLS

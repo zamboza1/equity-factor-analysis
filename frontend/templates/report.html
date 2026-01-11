@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ticker }}_ANALYSIS - Radar{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center flex-wrap">
+            <div>
+                <h2 class="mb-0">
+                    <i class="fas fa-file-alt me-2"></i>
+                    {{ ticker }}_ANALYSIS_REPORT
+                </h2>
+                <p class="mb-0 mt-2 opacity-75">
+                    <i class="fas fa-calendar me-1"></i>
+                    {{ date_str }}
+                </p>
+            </div>
+            <a href="/" class="btn btn-primary mt-2 mt-md-0">
+                <i class="fas fa-arrow-left me-2"></i>
+                BACK
+            </a>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="report-content">
+            {{ content|safe }}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .report-content {
+        line-height: 1.8;
+        color: var(--text-primary);
+    }
+    
+    .report-content h1 {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--accent-cyan);
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 3px solid var(--border);
+        text-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+    }
+    
+    .report-content h2 {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--accent-cyan);
+        margin: 3rem 0 1.5rem 0;
+        padding-bottom: 0.75rem;
+        border-bottom: 2px solid var(--border);
+        text-shadow: 0 0 10px rgba(0, 217, 255, 0.2);
+    }
+    
+    .report-content h3 {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--accent-purple);
+        margin: 2rem 0 1rem 0;
+    }
+    
+    .report-content p {
+        margin-bottom: 1rem;
+        color: var(--text-secondary);
+    }
+    
+    .report-content strong {
+        color: var(--accent-green);
+        font-weight: 600;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .report-content ul {
+        margin: 1.5rem 0;
+        padding-left: 2rem;
+        list-style: none;
+    }
+    
+    .report-content li {
+        margin-bottom: 0.5rem;
+        color: var(--text-secondary);
+        position: relative;
+        padding-left: 1.5rem;
+    }
+    
+    .report-content li:before {
+        content: "▸";
+        color: var(--accent-cyan);
+        position: absolute;
+        left: 0;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .report-content img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 8px;
+        margin: 2rem 0;
+        border: 1px solid var(--border);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    }
+    
+    .report-content table {
+        font-family: 'JetBrains Mono', monospace;
+    }
+    
+    .report-content table thead th {
+        background: var(--bg-darker);
+        color: var(--accent-cyan);
+    }
+    
+    .report-content table tbody tr:hover {
+        background: var(--bg-hover);
+        color: var(--accent-green);
+    }
+</style>
+{% endblock %}
