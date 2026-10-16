@@ -2,7 +2,7 @@
 # Start the Stock Factor Analysis web interface
 # Features:
 # - Auto-restart on crash
-# - Robust process cleanup (prevents "Address already in use")
+# - Cleanup limited to the launched child process
 # - Hot reloading via Uvicorn
 
 PORT=${1:-8000}
@@ -18,35 +18,21 @@ NC='\033[0m' # No Color
 # Change to project directory
 cd "$(dirname "$0")"
 
-# Cleanup function
+# Stop only the child started by this launcher. Never kill a port's owner.
+SERVER_PID=""
 cleanup() {
-    echo -e "\n${YELLOW}Stoppping server...${NC}"
-    
-    # Find PID using port
-    local pid=$(lsof -ti:$PORT 2>/dev/null)
-    if [ -n "$pid" ]; then
-        echo -e "${YELLOW}Killing process on port $PORT (PID: $pid)${NC}"
-        kill -15 $pid 2>/dev/null # Try SIGTERM first
-        sleep 1
-        
-        # Check if still alive
-        if kill -0 $pid 2>/dev/null; then
-            echo -e "${RED}Force killing process $pid${NC}"
-            kill -9 $pid 2>/dev/null
-        fi
+    trap - INT TERM
+    if [ -n "$SERVER_PID" ]; then
+        kill -TERM "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
     fi
     exit 0
 }
-
-# Trap signals
 trap cleanup INT TERM
 
-# Initial cleanup
-pid=$(lsof -ti:$PORT 2>/dev/null)
-if [ -n "$pid" ]; then
-    echo -e "${YELLOW}Cleaning up existing process on port $PORT...${NC}"
-    kill -9 $pid 2>/dev/null
-    sleep 1
+if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Port $PORT is already in use; choose another port."
+    exit 1
 fi
 
 # Main loop
@@ -57,9 +43,12 @@ while true; do
     
     # Run uvicorn
     # --reload ensures backend reloads on edits
-    python -W ignore -m uvicorn backend.web:app --host 0.0.0.0 --port $PORT --reload
+    python -W ignore -m uvicorn backend.web:app --host 127.0.0.1 --port "$PORT" --reload &
+    SERVER_PID=$!
+    wait "$SERVER_PID"
     
     EXIT_CODE=$?
+    SERVER_PID=""
     
     # If exit code is 0, user likely stopped it manually (but trap usually catches this)
     # If exit code is 130 (SIGINT), we stop
@@ -78,9 +67,9 @@ while true; do
     echo -e "${YELLOW}Server crashed (code: $EXIT_CODE). Restarting in 2s... ($RESTART_COUNT/$MAX_RESTARTS)${NC}"
     sleep 2
     
-    # Ensure port is free before restart
-    pid=$(lsof -ti:$PORT 2>/dev/null)
-    if [ -n "$pid" ]; then
-        kill -9 $pid 2>/dev/null
+    # A different owner may have acquired the port after the child exited.
+    if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "Port $PORT is now in use; stopping without touching its owner."
+        exit 1
     fi
 done

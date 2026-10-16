@@ -55,18 +55,10 @@ class TestSABRImpliedVol:
             assert iv >= 0
 
     def test_sabr_invalid_inputs(self):
-        """Test that invalid inputs return 0 or handle gracefully."""
-        # Zero forward
-        iv = sabr_implied_vol(0, 100, 0.25, 0.2, 0.5, -0.3, 0.5)
-        assert iv == 0.0
-
-        # Zero strike
-        iv = sabr_implied_vol(100, 0, 0.25, 0.2, 0.5, -0.3, 0.5)
-        assert iv == 0.0
-
-        # Zero time
-        iv = sabr_implied_vol(100, 100, 0, 0.2, 0.5, -0.3, 0.5)
-        assert iv == 0.0
+        """Invalid inputs must not be mistaken for measured zero volatility."""
+        for forward,strike,maturity in [(0,100,.25),(100,0,.25),(100,100,0)]:
+            with pytest.raises(ValueError, match="must be positive"):
+                sabr_implied_vol(forward,strike,maturity,.2,.5,-.3,.5)
 
 
 class TestSABRModel:
@@ -202,4 +194,3 @@ class TestVolSurface:
         moneyness = compute_moneyness(strikes, spot)
 
         assert np.allclose(moneyness, [0.8, 1.0, 1.2])
-

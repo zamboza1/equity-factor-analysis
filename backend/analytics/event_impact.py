@@ -135,15 +135,18 @@ class EventImpactStudy:
             data = get_close_prices(
                 ticker,
                 start=window_start,
-                end=window_end,
+                end=window_end + pd.Timedelta(minutes=1),
                 interval="1m",
                 cache=cache,
-                use_cache=True
+                use_cache=use_cache,
+                prepost=True
             )
 
             # Check if we got reasonable data
-            if len(data) > 0:
-                return data.sort_index()
+            data = data.sort_index().loc[window_start:window_end]
+            if len(data) >= 2:
+                return data
+            raise DataError('Insufficient bars inside the requested event window')
 
         except Exception:
             # If download failed, raise error
@@ -158,7 +161,8 @@ class EventImpactStudy:
         ticker: str,
         event: MacroEvent,
         cache: Optional[object] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        analysis_end=None
     ) -> EventImpact:
         """
         Analyze impact of a single event on an asset.
@@ -189,16 +193,22 @@ class EventImpactStudy:
         now = pd.Timestamp.now(tz=event.timestamp.tz if event.timestamp.tz else None)
         days_ago = (now - event.timestamp).days
         
-        if days_ago <= 7:
+        if 0 <= days_ago <= 7:
             # Try intraday data first
             try:
-                return self._analyze_event_intraday(ticker, event, cache, use_cache)
+                impact = self._analyze_event_intraday(ticker, event, cache, use_cache)
+                if analysis_end is not None:
+                    limit = pd.Timestamp(analysis_end)
+                    if limit.tz is None: limit = limit.tz_localize(event.timestamp.tz)
+                    if impact.window_end >= limit:
+                        raise DataError('Intraday window exceeds the requested analysis range')
+                return impact
             except DataError:
                 # Fall back to daily
                 pass
         
         # Use daily data for older events
-        return self._analyze_event_daily(ticker, event, cache, use_cache)
+        return self._analyze_event_daily(ticker, event, cache, use_cache, analysis_end)
 
     def _analyze_event_intraday(
         self,
@@ -227,6 +237,8 @@ class EventImpactStudy:
         event_time = event.timestamp
         pre_returns = returns[returns.index < event_time]
         post_returns = returns[returns.index >= event_time]
+        if len(pre_returns) == 0 or len(post_returns) == 0:
+            raise DataError('Intraday bars must cover both sides of the event')
 
         # Compute cumulative returns
         pre_cum_return = pre_returns.sum() if len(pre_returns) > 0 else 0.0
@@ -250,27 +262,35 @@ class EventImpactStudy:
         ticker: str,
         event: MacroEvent,
         cache: Optional[object],
-        use_cache: bool
+        use_cache: bool,
+        analysis_end=None
     ) -> EventImpact:
         """
         Analyze event using daily data.
         
         For daily analysis:
-        - pre_event_return: Return from day before event to event day open (approximated as 0)
+        - pre_event_return: Unavailable intraday measurement, stored as 0
         - post_event_return: Event day close vs previous day close
-        - This captures the full day's reaction to the event
+        - cumulative_return: Previous close through the next available session
+        These are full-day proxies, not isolated effects of the release.
         """
         event_date = event.timestamp.date()
         
-        # Get 5 days of data around the event to ensure we have enough
+        # Include the next session across weekends; the provider end is exclusive.
         start_date = (event.timestamp - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
-        end_date = (event.timestamp + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+        end_date = (event.timestamp + pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        if analysis_end is not None:
+            end_date = min(end_date, pd.Timestamp(analysis_end).strftime('%Y-%m-%d'))
         
         try:
             prices = get_close_prices(
                 ticker, start_date, end_date, 
                 interval="1d", cache=cache, use_cache=use_cache
             )
+            # Also enforce the end bound on cached or broader provider responses.
+            if analysis_end is not None:
+                limit = pd.Timestamp(analysis_end).date()
+                prices = prices.loc[prices.index.date < limit]
             
             if len(prices) < 2:
                 raise DataError(f"Insufficient daily data for {ticker} around {event.timestamp}")
@@ -310,7 +330,7 @@ class EventImpactStudy:
             
             # For daily data, we approximate:
             # - pre_event = 0 (we don't know intraday timing)
-            # - post_event = full event day return (captures the reaction)
+            # - post_event = full event day return
             pre_return = 0.0
             post_return = event_day_return
             
@@ -325,7 +345,7 @@ class EventImpactStudy:
                 cumulative_return=event_day_return + next_day_return,
                 window_start=window_start,
                 window_end=window_end,
-                n_observations=2,
+                n_observations=1 + int(event_idx + 1 < len(prices_df)),
                 data_type="daily"
             )
             
@@ -395,5 +415,3 @@ class EventImpactStudy:
 
         df = pd.DataFrame(data)
         return df
-
-

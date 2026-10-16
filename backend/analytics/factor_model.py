@@ -72,6 +72,8 @@ class FactorModel:
         """
         if not factor_names:
             raise ValueError("factor_names cannot be empty")
+        if any(not isinstance(name, str) or not name for name in factor_names) or len(set(factor_names)) != len(factor_names):
+            raise ValueError("factor_names must contain unique, non-empty strings")
         self.factor_names = list(factor_names)
 
     def fit(
@@ -92,7 +94,7 @@ class FactorModel:
         Postconditions:
             - Returns FactorFitResult with regression statistics
             - All betas, t-stats, p-values are computed
-            - R² is between 0 and 1 (or NaN if fit fails)
+            - Invalid or unidentified fits raise DataError
 
         Args:
             asset_returns: ReturnSeries for the asset
@@ -105,7 +107,22 @@ class FactorModel:
         Raises:
             DataError: If insufficient data or factor columns missing
         """
-        # Align asset returns with factor data
+        if not isinstance(min_observations, int) or isinstance(min_observations, bool) or min_observations < 2:
+            raise ValueError("min_observations must be an integer of at least 2")
+        if not isinstance(factor_data.index, pd.DatetimeIndex) or factor_data.index.hasnans or factor_data.index.has_duplicates:
+            raise DataError("Factor data must have unique, valid dates")
+        if factor_data.columns.has_duplicates:
+            raise DataError("Factor columns must be unique")
+        missing = [name for name in self.factor_names if name not in factor_data.columns]
+        if missing:
+            raise DataError(f"Missing factor columns: {', '.join(missing)}")
+        columns = self.factor_names + (["RF"] if "RF" in factor_data.columns and "RF" not in self.factor_names else [])
+        try:
+            factor_data = factor_data[columns].astype(float)
+        except (TypeError, ValueError) as exc:
+            raise DataError("Factor returns must be numeric") from exc
+
+        # Align observations by their dates; missing observations are excluded.
         common_dates = asset_returns.dates.intersection(factor_data.index)
 
         if len(common_dates) < min_observations:
@@ -115,7 +132,13 @@ class FactorModel:
             )
 
         # Extract aligned data
-        asset_aligned = asset_returns.returns.reindex(common_dates).dropna()
+        try:
+            asset_aligned = asset_returns.returns.reindex(common_dates).astype(float)
+        except (TypeError, ValueError) as exc:
+            raise DataError("Asset returns must be numeric") from exc
+        if np.isinf(asset_aligned.to_numpy()).any() or np.isinf(factor_data.loc[common_dates].to_numpy()).any():
+            raise DataError("Regression inputs must not contain infinite values")
+        asset_aligned = asset_aligned.dropna()
         
         # Check for Risk-Free rate to compute excess returns
         if "RF" in factor_data.columns:
@@ -143,12 +166,21 @@ class FactorModel:
         X = factor_aligned.values
 
         # Add constant for intercept (alpha)
-        X_with_const = add_constant(X)
+        X_with_const = add_constant(X, has_constant="add")
+        if len(y) <= X_with_const.shape[1]:
+            raise DataError("Regression requires positive residual degrees of freedom")
+        if np.ptp(y) == 0:
+            raise DataError("Asset excess returns must vary to estimate regression statistics")
+        if np.linalg.matrix_rank(X_with_const) < X_with_const.shape[1]:
+            raise DataError("Factor design is rank deficient: constant or collinear factors")
 
         # Fit OLS regression
         try:
             model = OLS(y, X_with_const)
             results = model.fit()
+            statistics = np.r_[results.params, results.tvalues, results.pvalues, results.rsquared]
+            if not np.isfinite(statistics).all():
+                raise DataError("Regression produced non-finite statistics")
         except Exception as e:
             raise DataError(f"Regression failed: {e}") from e
 
@@ -253,5 +285,4 @@ class FactorModel:
             lines.append(f"Strong model fit (R²={result.r_squared:.2f})")
 
         return "; ".join(lines) if lines else "No significant factor exposures detected"
-
 

@@ -2,7 +2,7 @@
 Factor data sources.
 
 This module provides functions to load factor data (Market, Value, Size, Momentum).
-Initially uses yfinance to download real factor data.
+Loads daily factors from the Kenneth French Data Library through pandas-datareader.
 """
 
 from typing import Optional
@@ -11,6 +11,21 @@ from pathlib import Path
 from backend.errors import DataError
 
 
+def normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep daily session labels, independent of provider index representation."""
+    frame = frame.copy()
+    index = frame.index
+    if isinstance(index, pd.PeriodIndex):
+        if index.freqstr != 'D':
+            raise DataError("Expected daily factor periods")
+        index = index.to_timestamp()
+    index = pd.DatetimeIndex(index)
+    if index.tz is not None:
+        index = index.tz_localize(None)
+    frame.index = index.normalize()
+    if frame.index.has_duplicates or frame.index.hasnans:
+        raise DataError("Factor dates must be unique, valid daily sessions")
+    return frame.sort_index()
 
 
 
@@ -39,7 +54,7 @@ def get_factor_data(
             start_date, 
             end_date
         )
-        ff3_df = ff3[0] # The first table contains daily returns
+        ff3_df = normalize_daily_frame(ff3[0])
         
         # Momentum Factor (Daily)
         mom = web.DataReader(
@@ -48,7 +63,7 @@ def get_factor_data(
             start_date, 
             end_date
         )
-        mom_df = mom[0]
+        mom_df = normalize_daily_frame(mom[0])
         
         # Merge factors
         df = pd.merge(ff3_df, mom_df, left_index=True, right_index=True)
@@ -71,9 +86,10 @@ def get_factor_data(
         if "Mom" in df.columns:
             df = df.rename(columns={"Mom": "Momentum"})
             
+        # Match the price provider's start-inclusive, end-exclusive daily range.
+        df = df.loc[(df.index >= pd.Timestamp(start_date)) & (df.index < pd.Timestamp(end_date))]
         return df[["Market", "Value", "Size", "Momentum", "RF"]]
         
     except Exception as e:
         raise DataError(f"Failed to fetch Fama-French factors from Ken French Library: {e}")
-
 

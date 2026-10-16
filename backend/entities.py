@@ -67,8 +67,8 @@ class ReturnSeries:
         Initialize a ReturnSeries.
 
         Preconditions:
-            - len(dates) == len(returns) OR returns has same index as dates
-            - dates and returns are aligned (same index or same length)
+            - Labeled returns refer to the supplied dates, regardless of order
+            - Arrays and RangeIndex Series are positional and have matching length
 
         Postconditions:
             - self.dates is sorted and deduplicated
@@ -82,24 +82,23 @@ class ReturnSeries:
         if len(dates) == 0:
             raise ValueError("dates cannot be empty")
 
-        # Align returns with dates
+        if dates.hasnans:
+            raise ValueError("dates must not contain NaN values")
+
+        # Preserve label identity; equal lengths do not authorize relabeling.
         if isinstance(returns, pd.Series):
-            # If returns has an index, try to align it
-            if hasattr(returns, 'index') and len(returns.index) > 0:
-                # If indices match, use the returns as-is
-                if len(returns) == len(dates) and (returns.index == dates).all():
-                    aligned_returns = returns
-                elif len(returns) == len(dates):
-                    # Same length but different index - use values with dates index
-                    aligned_returns = pd.Series(returns.values, index=dates)
-                else:
-                    # Mismatched lengths - raise error
-                    raise ValueError(f"length mismatch: dates has {len(dates)} elements, returns has {len(returns)}")
+            if len(returns) != len(dates):
+                raise ValueError(f"length mismatch: dates has {len(dates)} elements, returns has {len(returns)}")
+            if isinstance(returns.index, pd.RangeIndex) and returns.index.equals(pd.RangeIndex(len(returns))):
+                aligned_returns = pd.Series(returns.to_numpy(copy=True), index=dates)
+            elif returns.index.equals(dates):
+                aligned_returns = returns.copy()
+            elif (isinstance(returns.index, pd.DatetimeIndex)
+                  and not returns.index.has_duplicates and not dates.has_duplicates
+                  and returns.index.difference(dates).empty and dates.difference(returns.index).empty):
+                aligned_returns = returns.reindex(dates)
             else:
-                # Empty series or no index
-                if len(returns) != len(dates):
-                    raise ValueError(f"length mismatch: dates has {len(dates)} elements, returns has {len(returns)}")
-                aligned_returns = pd.Series(returns.values, index=dates)
+                raise ValueError("Labeled returns must match the supplied dates")
         else:
             # Convert to Series
             if len(returns) != len(dates):
@@ -156,4 +155,3 @@ class ReturnSeries:
         """String representation."""
         asset_str = f" ({self._asset.ticker})" if self._asset else ""
         return f"ReturnSeries({len(self)} obs{asset_str})"
-

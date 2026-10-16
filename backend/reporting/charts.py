@@ -114,25 +114,21 @@ def plot_event_impact(
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Group by event name
-    event_names = list(set(i.event.name for i in impacts))
-    tickers = list(set(i.ticker for i in impacts))
-
-    x_pos = np.arange(len(event_names))
+    # One ordered category per actual observation; repeated event types are
+    # separate releases, not an implicit aggregation or an unordered set.
+    ordered = sorted(impacts, key=lambda i: (i.event.timestamp, i.ticker, i.event.name))
+    event_names = [f'{i.ticker}\n{i.event.name} {i.event.timestamp:%Y-%m-%d}' for i in ordered]
+    x_pos = np.arange(len(ordered))
     width = 0.35
 
     # Plot pre and post returns for each event
-    for ticker in tickers:
-        ticker_impacts = [i for i in impacts if i.ticker == ticker]
-        pre_returns = [i.pre_event_return for i in ticker_impacts]
-        post_returns = [i.post_event_return for i in ticker_impacts]
-
-        if len(pre_returns) == len(event_names):
-            ax.bar(x_pos - width/2, pre_returns, width, label=f"{ticker} Pre", alpha=0.7)
-            ax.bar(x_pos + width/2, post_returns, width, label=f"{ticker} Post", alpha=0.7)
+    pre_returns = [i.pre_event_return if i.data_type == 'intraday' else np.nan for i in ordered]
+    post_returns = [i.post_event_return for i in ordered]
+    ax.bar(x_pos - width/2, pre_returns, width, label='Pre (intraday only)', alpha=0.7)
+    ax.bar(x_pos + width/2, post_returns, width, label='Post / event-day close-to-close', alpha=0.7)
 
     ax.set_xlabel("Event")
-    ax.set_ylabel("Return")
+    ax.set_ylabel("Log return (decimal)")
     ax.set_title("Event Impact: Pre vs Post Event Returns")
     ax.set_xticks(x_pos)
     ax.set_xticklabels(event_names, rotation=45, ha="right")
@@ -209,5 +205,4 @@ def create_report_assets_dir(report_dir: Path) -> Path:
     assets_dir = report_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     return assets_dir
-
 

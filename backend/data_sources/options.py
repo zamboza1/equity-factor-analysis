@@ -7,8 +7,29 @@ This module handles fetching option chain data from yfinance.
 from dataclasses import dataclass
 from typing import Optional, Dict, List
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from backend.errors import DataError
+
+
+def option_time_to_expiry(expiry_date, now=None) -> float:
+    """ACT/365 maturity; date-only expiries use an explicit 16:00 ET convention.
+
+    This is a disclosed approximation, not a contract-specific settlement feed.
+    A supplied timezone-aware timestamp is used as given.
+    """
+    expiry = pd.Timestamp(expiry_date)
+    if expiry.tz is None:
+        if expiry == expiry.normalize():
+            expiry += pd.Timedelta(hours=16)
+        expiry = expiry.tz_localize('America/New_York')
+    current = pd.Timestamp.now(tz='UTC') if now is None else pd.Timestamp(now)
+    if current.tz is None:
+        raise DataError('Valuation time must be timezone-aware')
+    maturity = (expiry - current).total_seconds() / (365 * 24 * 60 * 60)
+    if not np.isfinite(maturity) or maturity <= 0:
+        raise DataError('Option expiry must be after the valuation time')
+    return maturity
 
 
 @dataclass
@@ -91,7 +112,7 @@ def get_option_chain(
             if avail_expiries:
                 expiry_date = pd.to_datetime(avail_expiries[0])
             else:
-                expiry_date = pd.Timestamp.now()
+                raise DataError(f'No option expiry available for {ticker}')
 
         # Extract strikes and IVs
         call_strikes = calls["strike"].values if not calls.empty else np.array([])
@@ -129,6 +150,5 @@ def get_option_chain(
         import traceback
         traceback.print_exc()
         raise DataError(f"Failed to fetch option chain for {ticker}: {e}")
-
 
 

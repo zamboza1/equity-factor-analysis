@@ -6,7 +6,7 @@ Think of the SABR model as a way to "connect the dots" between different option 
 to understand how the market expects volatility to change as the stock price moves.
 
 The SABR model uses 4 specialized parameters:
-- alpha (α): The "Base Volatility" - volatility when the stock is at its current price.
+- alpha (α): Volatility scale; ATM IV also depends on forward, beta and maturity.
 - beta (β): The "Backbone" - determines how volatility scales with the stock price.
 - rho (ρ): The "Skew" - measures if volatility tends to rise when the stock falls (fear).
 - nu (ν): The "Smile Curvature" - measures the risk of extreme price jumps.
@@ -30,7 +30,7 @@ class SABRParams:
         rho: Correlation (-1 <= rho <= 1)
         nu: Volatility of volatility (nu >= 0)
     """
-    alpha: float  # Base Volatility (ATM level)
+    alpha: float  # Volatility scale
     beta: float   # Backbone (scaling factor, 0 to 1)
     rho: float    # Skew (spot-vol correlation, -1 to 1)
     nu: float     # Vol-of-vol (smile curvature)
@@ -52,7 +52,7 @@ class SABRFitResult:
         params: SABRParams object
         fit_error: Root mean squared error of fit
         n_iterations: Number of optimization iterations
-        success: Whether calibration succeeded
+        success: Whether optimization converged; not a guarantee of fit/pricing quality
     """
     params: SABRParams
     fit_error: float
@@ -83,7 +83,7 @@ def sabr_implied_vol(
         - strike > 0
         - time_to_expiry > 0
         - 0 <= beta <= 1
-        - -1 <= rho <= 1
+        - -1 < rho < 1
         - nu >= 0
         - alpha > 0
 
@@ -103,54 +103,38 @@ def sabr_implied_vol(
     Returns:
         Implied volatility (annualized)
     """
-    if forward <= 0 or strike <= 0 or time_to_expiry <= 0:
-        return 0.0
+    inputs = [forward, strike, time_to_expiry, alpha, beta, rho, nu]
+    if not np.isfinite(inputs).all():
+        raise ValueError("SABR inputs must be finite")
+    if min(forward, strike, time_to_expiry, alpha) <= 0:
+        raise ValueError("forward, strike, maturity and alpha must be positive")
+    if not 0 <= beta <= 1 or not -1 < rho < 1 or nu < 0:
+        raise ValueError("SABR requires beta in [0,1], rho in (-1,1), and nu >= 0")
 
-    if alpha <= 0 or nu < 0:
-        return 0.0
-
-    # Handle at-the-money case
-    if abs(forward - strike) < 1e-8:
-        # ATM formula
-        f_beta = forward ** (1 - beta)
-        vol = alpha / f_beta
-        return vol
-
-    # Compute log moneyness
-    log_moneyness = np.log(forward / strike)
-
-    # Compute z and chi
-    f_beta = forward ** (1 - beta)
-    k_beta = strike ** (1 - beta)
-    z = (nu / alpha) * f_beta * k_beta * log_moneyness / (f_beta - k_beta)
-
-    # Compute chi(z)
-    sqrt_term = np.sqrt(1 - 2 * rho * z + z * z)
-    chi_z = np.log((sqrt_term - rho + z) / (1 - rho))
-
-    # Avoid division by zero
-    if abs(z) < 1e-8:
-        chi_z = z
-
-    # Main SABR formula
-    numerator = alpha * (1 + ((1 - beta) ** 2 / 24) * (log_moneyness ** 2) +
-                        ((1 - beta) ** 4 / 1920) * (log_moneyness ** 4))
-    numerator *= (1 + ((1 - beta) ** 2 / 24) * (alpha ** 2) / (f_beta ** 2) +
-                  rho * beta * nu * alpha / (4 * f_beta ** (3 - beta)) +
-                  (2 - 3 * rho ** 2) * nu ** 2 / 24) * time_to_expiry
-
-    denominator = f_beta * (1 - beta) * log_moneyness * (1 + (1 - beta) ** 2 / 24 * (log_moneyness ** 2) +
-                                                          (1 - beta) ** 4 / 1920 * (log_moneyness ** 4))
-    denominator *= (z / chi_z)
-
-    if abs(denominator) < 1e-8:
-        # Fallback to simplified formula
-        vol = alpha / (forward ** (1 - beta))
+    # Hagan et al. lognormal approximation. Alpha is a scale parameter, not IV.
+    # The same expression includes ATM, beta=1 and nu=0 through the small-z limit.
+    log_m = np.log(forward / strike)
+    one_minus_beta = 1 - beta
+    geometric_scale = np.exp(one_minus_beta * (np.log(forward) + np.log(strike)) / 2)
+    z = nu * geometric_scale * log_m / alpha
+    if abs(z) < 1e-5:
+        z_over_x = 1 - rho * z / 2 + (2 - 3 * rho**2) * z**2 / 12
     else:
-        vol = numerator / denominator
-
-    # Ensure non-negative
-    return max(0.0, vol)
+        # asinh difference is algebraically x(z), without cancellation in its log numerator.
+        rho_scale = np.sqrt(1 - rho**2)
+        x = np.arcsinh((z - rho) / rho_scale) + np.arcsinh(rho / rho_scale)
+        z_over_x = z / x
+    log_correction = one_minus_beta**2 * log_m**2
+    denominator = geometric_scale * (1 + log_correction / 24 + log_correction**2 / 1920)
+    time_correction = (
+        one_minus_beta**2 * alpha**2 / (24 * geometric_scale**2)
+        + rho * beta * nu * alpha / (4 * geometric_scale)
+        + (2 - 3 * rho**2) * nu**2 / 24
+    )
+    vol = alpha / denominator * z_over_x * (1 + time_to_expiry * time_correction)
+    if not np.isfinite(vol) or vol <= 0:
+        raise ValueError("SABR approximation produced an invalid volatility")
+    return float(vol)
 
 
 class SABRModel:
@@ -225,6 +209,18 @@ class SABRModel:
         if len(strikes) < 3:
             raise CalibrationError("Need at least 3 strikes for calibration")
 
+        strikes = np.asarray(strikes, dtype=float)
+        ivs = np.asarray(ivs, dtype=float)
+        if strikes.ndim != 1 or ivs.ndim != 1:
+            raise CalibrationError("strikes and ivs must be one-dimensional")
+        if not np.isfinite([forward, time_to_expiry]).all() or min(forward, time_to_expiry) <= 0:
+            raise CalibrationError("Forward and maturity must be finite and positive")
+        if not np.isfinite(strikes).all() or not np.isfinite(ivs).all() or (strikes <= 0).any() or (ivs <= 0).any():
+            raise CalibrationError("Strikes and IVs must be finite and positive")
+        required = 3 if self.beta_fixed else 4
+        if len(np.unique(strikes)) < required:
+            raise CalibrationError(f"Need at least {required} distinct strikes for calibration")
+
         # Initial parameter guess
         if initial_params is None:
             # Rough initial guess
@@ -256,10 +252,13 @@ class SABRModel:
                 return 1e10
 
             # Compute model IVs
-            model_ivs = np.array([
-                sabr_implied_vol(forward, k, time_to_expiry, alpha, beta, rho, nu)
-                for k in strikes
-            ])
+            try:
+                model_ivs = np.array([
+                    sabr_implied_vol(forward, k, time_to_expiry, alpha, beta, rho, nu)
+                    for k in strikes
+                ])
+            except ValueError:
+                return 1e10
 
             # Compute error
             errors = model_ivs - ivs
@@ -280,7 +279,7 @@ class SABRModel:
                 x0,
                 method="L-BFGS-B",
                 bounds=bounds,
-                options={"maxiter": 1000}
+                options={"maxiter": 1000, "ftol": 1e-14, "gtol": 1e-10}
             )
 
             if not result.success:
@@ -309,4 +308,3 @@ class SABRModel:
 
         except Exception as e:
             raise CalibrationError(f"SABR calibration failed: {e}") from e
-

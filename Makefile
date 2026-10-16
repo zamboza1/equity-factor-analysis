@@ -1,52 +1,34 @@
-# Makefile shortcuts for radar tool
+PYTHON ?= python3
+TICKER ?= AAPL
+START ?= 2024-01-01
+END ?= $(shell date +%Y-%m-%d)
+PORT ?= 8000
 
-.PHONY: help analyze test install clean
+.PHONY: help analyze analyze-aapl analyze-msft analyze-spy analyze-googl event-study web test install clean
 
-# Default target
 help:
-	@echo "Stock Factor Analysis"
-	@echo ""
-	@echo "Available commands:"
-	@echo "  make analyze TICKER=AAPL          - Run full analysis (default: AAPL)"
-	@echo "  make analyze-msft                - Quick: analyze MSFT"
-	@echo "  make analyze-spy                 - Quick: analyze SPY"
-	@echo "  make event-study                 - Run CPI event study"
-	@echo "  make test                        - Run all tests"
-	@echo "  make install                     - Install package"
-	@echo "  make clean                       - Clean cache and reports"
-	@echo ""
+	@echo "Equity Factor Analysis"
+	@echo "make analyze TICKER=AAPL START=2024-01-01 END=2025-01-01"
+	@echo "make web PORT=8000 | make event-study | make test | make install"
+	@echo "make clean deletes local cached downloads and generated reports"
 
-# Full analysis
 analyze:
-	@python -m radar.cli analyze $(or $(TICKER),AAPL) --start 2023-01-01 --end $$(date +%Y-%m-%d)
+	$(PYTHON) -m backend.cli analyze $(TICKER) --start $(START) --end $(END)
 
-# Quick shortcuts for common tickers
-analyze-aapl:
-	@python -m radar.cli analyze AAPL --start 2023-01-01 --end $$(date +%Y-%m-%d)
+analyze-aapl analyze-msft analyze-spy analyze-googl:
+	$(MAKE) analyze TICKER=$(shell echo $(@:analyze-%=%) | tr '[:lower:]' '[:upper:]')
 
-analyze-msft:
-	@python -m radar.cli analyze MSFT --start 2023-01-01 --end $$(date +%Y-%m-%d)
-
-analyze-spy:
-	@python -m radar.cli analyze SPY --start 2023-01-01 --end $$(date +%Y-%m-%d)
-
-analyze-googl:
-	@python -m radar.cli analyze GOOGL --start 2023-01-01 --end $$(date +%Y-%m-%d)
-
-# Event study
 event-study:
-	@python -m radar.cli event-study --event CPI --assets SPY,TLT
+	$(PYTHON) -m backend.cli event-study --event CPI --assets SPY,TLT
 
-# Tests
+web:
+	$(PYTHON) -m backend.web --port $(PORT)
+
 test:
-	@pytest tests/ -v
+	$(PYTHON) -m pytest tests -q
 
-# Install
 install:
-	@pip install -e .
+	$(PYTHON) -m pip install -e ".[dev]"
 
-# Clean
 clean:
-	@rm -rf .cache reports/*.md reports/assets/*.png
-	@echo "Cleaned cache and reports"
-
+	rm -rf .cache reports

@@ -62,7 +62,7 @@ def load_events_from_csv(csv_path: Optional[str] = None) -> List[MacroEvent]:
         DataError: If file doesn't exist or is invalid
     """
     if csv_path is None:
-        default_path = Path(__file__).parent.parent.parent / "data" / "macro_events.csv"
+        default_path = Path(__file__).parent.parent / "data" / "macro_events.csv"
         csv_path = str(default_path)
 
     csv_file = Path(csv_path)
@@ -162,153 +162,27 @@ def filter_events_by_date_range(
     return filtered
 
 
-def generate_recent_events(days_back: int = 30) -> List[MacroEvent]:
-    """
-    Automatically generate recent macro events based on known schedules.
-    
-    CPI: 2nd Tuesday of each month at 8:30 AM ET
-    FOMC: Scheduled meetings (approximate - 8 per year)
-    NFP: First Friday of each month at 8:30 AM ET
-    
-    This ensures events are always within yfinance's 30-day intraday data window.
-    
-    Args:
-        days_back: How many days back to generate events (default 30)
-    
-    Returns:
-        List of MacroEvent objects for recent events
-    """
-    from datetime import datetime, timedelta
-    import pytz
-    
-    events = []
-    eastern = pytz.timezone("US/Eastern")
-    # Use pd.Timestamp for consistent timezone handling
-    today_ts = pd.Timestamp.now(tz=eastern)
-    today = today_ts.to_pydatetime()
-    start_date = (today_ts - pd.Timedelta(days=days_back)).to_pydatetime()
-    
-    # Generate events for all months that overlap with the date range
-    # Start from 2 months before start_date to catch events near the boundary
-    current_month = (start_date - timedelta(days=60)).replace(day=1)
-    end_month = today.replace(day=1) + timedelta(days=32)  # Next month to be safe
-    
-    # Generate CPI events (2nd Tuesday of each month)
-    while current_month <= end_month:
-        # Find 2nd Tuesday
-        first_day = current_month.replace(day=1)
-        # Find first Tuesday
-        days_until_tuesday = (1 - first_day.weekday()) % 7  # 1 = Tuesday
-        if days_until_tuesday == 0:
-            days_until_tuesday = 7
-        first_tuesday = first_day + timedelta(days=days_until_tuesday)
-        second_tuesday = first_tuesday + timedelta(days=7)  # 2nd Tuesday
-        
-        # Convert to timezone-aware for comparison
-        second_tuesday_aware = eastern.localize(second_tuesday.replace(tzinfo=None)) if second_tuesday.tzinfo is None else second_tuesday
-        
-        # Create event timestamp
-        event_time = eastern.localize(
-            datetime.combine(second_tuesday_aware.date(), datetime.strptime("08:30", "%H:%M").time())
-        )
-        event_ts = pd.Timestamp(event_time)
-        
-        # Check if within date range
-        if start_date <= event_ts.to_pydatetime() <= today:
-            events.append(MacroEvent(
-                name="CPI",
-                timestamp=event_ts,
-                timezone="US/Eastern",
-                source="BLS"
-            ))
-        
-        # Move to next month
-        if current_month.month == 12:
-            current_month = current_month.replace(year=current_month.year + 1, month=1)
-        else:
-            current_month = current_month.replace(month=current_month.month + 1)
-    
-    # Generate NFP events (first Friday of each month)
-    current_month = (start_date - timedelta(days=60)).replace(day=1)
-    while current_month <= end_month:
-        first_day = current_month.replace(day=1)
-        days_until_friday = (4 - first_day.weekday()) % 7  # 4 = Friday
-        if days_until_friday == 0:
-            days_until_friday = 7
-        first_friday = first_day + timedelta(days=days_until_friday)
-        
-        # Convert to timezone-aware
-        first_friday_aware = eastern.localize(first_friday.replace(tzinfo=None)) if first_friday.tzinfo is None else first_friday
-        
-        # Create event timestamp
-        event_time = eastern.localize(
-            datetime.combine(first_friday_aware.date(), datetime.strptime("08:30", "%H:%M").time())
-        )
-        event_ts = pd.Timestamp(event_time)
-        
-        # Check if within date range
-        if start_date <= event_ts.to_pydatetime() <= today:
-            events.append(MacroEvent(
-                name="NFP",
-                timestamp=event_ts,
-                timezone="US/Eastern",
-                source="BLS"
-            ))
-        
-        # Move to next month
-        if current_month.month == 12:
-            current_month = current_month.replace(year=current_month.year + 1, month=1)
-        else:
-            current_month = current_month.replace(month=current_month.month + 1)
-    
-    # FOMC dates are irregular and cannot be algorithmically generated without valid source data.
-    # Users should ensure data/macro_events.csv is up to date for FOMC meetings.
+def get_events_for_analysis(start_date, end_date) -> List[MacroEvent]:
+    """Return sourced CSV events in the start-inclusive, end-exclusive range.
 
-    
-    # Sort by timestamp and remove duplicates
-    events.sort(key=lambda x: x.timestamp)
-    seen = set()
-    unique_events = []
-    for event in events:
-        key = (event.name, event.timestamp.date())
-        if key not in seen:
-            seen.add(key)
-            unique_events.append(event)
-    
-    return unique_events
+    The bundled calendar is a partial historical sample, not a live calendar.
+    Missing calendar coverage must not be replaced with weekday guesses.
+    """
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    if start.tz is None: start = start.tz_localize("US/Eastern")
+    if end.tz is None: end = end.tz_localize("US/Eastern")
+    if start >= end:
+        raise DataError("Event range start must precede end")
+    return [event for event in load_events_from_csv() if start <= event.timestamp < end]
 
 
 def get_recent_events_for_analysis(days_back: int = 30) -> List[MacroEvent]:
-    """
-    Get recent events for analysis, prioritizing auto-generated events
-    within the data availability window.
-    
-    Args:
-        days_back: Days back to look for events (default 30 for yfinance limit)
-    
-    Returns:
-        List of recent MacroEvent objects
-    """
-    # Try to load from CSV first
-    try:
-        csv_events = load_events_from_csv()
-        # Filter to recent events only
-        today = pd.Timestamp.now(tz="US/Eastern")
-        start_date = today - pd.Timedelta(days=days_back)
-        recent_csv = filter_events_by_date_range(csv_events, start_date, today)
-    except Exception:
-        recent_csv = []
-    
-    # Generate recent events automatically
-    auto_events = generate_recent_events(days_back=days_back)
-    
-    # Combine and deduplicate (prefer auto-generated for recent dates)
-    all_events = {}
-    for event in recent_csv + auto_events:
-        key = (event.name, event.timestamp.date())
-        # Keep auto-generated if duplicate (more accurate)
-        if key not in all_events or event.source in ["BLS", "Fed"]:
-            all_events[key] = event
-    
-    return sorted(all_events.values(), key=lambda x: x.timestamp)
+    """Read recent sourced entries; no entries means unavailable calendar data."""
+    now = pd.Timestamp.now(tz="US/Eastern")
+    return get_events_for_analysis(now - pd.Timedelta(days=days_back), now)
 
+
+def generate_recent_events(days_back: int = 30) -> List[MacroEvent]:
+    """Compatibility wrapper; event timestamps are loaded, never invented."""
+    return get_recent_events_for_analysis(days_back)

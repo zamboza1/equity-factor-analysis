@@ -117,7 +117,7 @@ class TestFactorModel:
         asset_series = ReturnSeries(factor_data.index, asset_returns)
 
         model = FactorModel(["Market", "Size"])  # Size column missing
-        with pytest.raises(KeyError):
+        with pytest.raises(DataError, match="Missing factor"):
             model.fit(asset_series, factor_data, min_observations=2)
 
     def test_factor_model_fit_no_overlap_raises(self):
@@ -225,4 +225,3 @@ class TestCreateSyntheticFactors:
         assert len(factors) > 0
         assert factors.index[0] >= pd.Timestamp("2023-01-01")
         assert factors.index[-1] <= pd.Timestamp("2023-01-31")
-

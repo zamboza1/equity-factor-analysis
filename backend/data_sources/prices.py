@@ -19,7 +19,8 @@ def get_prices(
     end: Union[str, date, datetime],
     interval: str = "1d",
     cache: Optional[DataCache] = None,
-    use_cache: bool = True
+    use_cache: bool = True,
+    prepost: bool = False
 ) -> pd.DataFrame:
     """
     Download price data for one or more tickers.
@@ -67,23 +68,29 @@ def get_prices(
     if not ticker_list:
         raise ValueError("tickers cannot be empty")
 
-    # Convert dates to strings for yfinance
-    if isinstance(start, (date, datetime)):
+    # Intraday timestamps must retain their time and timezone at the provider.
+    intraday = interval.endswith(('m', 'h')) and interval != '1mo'
+    if intraday:
+        start_str = pd.Timestamp(start).to_pydatetime()
+        end_str = pd.Timestamp(end).to_pydatetime()
+    elif isinstance(start, (date, datetime)):
         start_str = start.strftime("%Y-%m-%d")
     else:
         start_str = str(start)
 
-    if isinstance(end, (date, datetime)):
+    if not intraday and isinstance(end, (date, datetime)):
         end_str = end.strftime("%Y-%m-%d")
-    else:
+    elif not intraday:
         end_str = str(end)
 
     # Build cache query params
     query_params = {
         "tickers": sorted(ticker_list),  # Sort for consistent hashing
-        "start": start_str,
-        "end": end_str,
-        "interval": interval
+        "start": start_str.isoformat() if intraday else start_str,
+        "end": end_str.isoformat() if intraday else end_str,
+        "interval": interval,
+        "prepost": prepost,
+        "auto_adjust": True
     }
 
     # Check cache first
@@ -98,7 +105,7 @@ def get_prices(
         ticker_obj = yf.Ticker(ticker_str) if single_ticker else yf.Tickers(ticker_str)
 
         if single_ticker:
-            data = ticker_obj.history(start=start_str, end=end_str, interval=interval)
+            data = ticker_obj.history(start=start_str, end=end_str, interval=interval, prepost=prepost, auto_adjust=True)
             if data.empty:
                 raise DataError(f"No data returned for {ticker_list[0]}")
             # Ensure proper column names
@@ -108,7 +115,7 @@ def get_prices(
             data_dict = {}
             for ticker in ticker_list:
                 ticker_data = yf.Ticker(ticker).history(
-                    start=start_str, end=end_str, interval=interval
+                    start=start_str, end=end_str, interval=interval, prepost=prepost, auto_adjust=True
                 )
                 if not ticker_data.empty:
                     ticker_data.columns = [col.replace(" ", "") for col in ticker_data.columns]
@@ -144,7 +151,8 @@ def get_close_prices(
     end: Union[str, date, datetime],
     interval: str = "1d",
     cache: Optional[DataCache] = None,
-    use_cache: bool = True
+    use_cache: bool = True,
+    prepost: bool = False
 ) -> pd.Series:
     """
     Get close prices only (convenience function).
@@ -169,7 +177,7 @@ def get_close_prices(
     Returns:
         Series of close prices
     """
-    data = get_prices(tickers, start, end, interval, cache, use_cache)
+    data = get_prices(tickers, start, end, interval, cache, use_cache, prepost)
 
     if isinstance(data.index, pd.MultiIndex):
         # MultiIndex case - extract Close
@@ -177,5 +185,4 @@ def get_close_prices(
     else:
         # Single index case
         return data["Close"]
-
 

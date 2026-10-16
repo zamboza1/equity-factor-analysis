@@ -17,12 +17,12 @@ def compute_returns(prices: pd.Series, method: str = "log") -> pd.Series:
 
     Preconditions:
         - prices is a pd.Series with numeric values
-        - prices index is DatetimeIndex or convertible to dates
-        - prices contains no negative values
+        - prices has unique, valid DatetimeIndex labels
+        - observed prices are finite and positive; NaNs remain missing
         - method is either "log" or "simple"
 
     Postconditions:
-        - Returns a pd.Series with same index as prices (minus first row)
+        - Returns a pd.Series in ascending date order, without changing the input
         - Returns are computed as log returns or simple returns
         - First observation is NaN (no prior price to compute return from)
 
@@ -38,6 +38,14 @@ def compute_returns(prices: pd.Series, method: str = "log") -> pd.Series:
     """
     if not isinstance(prices, pd.Series):
         raise TypeError("prices must be a pd.Series")
+    if not isinstance(prices.index, pd.DatetimeIndex) or prices.index.hasnans or prices.index.has_duplicates:
+        raise ValueError("prices must have unique, valid dates")
+    try:
+        prices = prices.astype(float).sort_index()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("prices must be numeric") from exc
+    if np.isinf(prices.to_numpy()).any():
+        raise ValueError("observed prices must be finite")
 
     if (prices <= 0).any():
         raise ValueError("prices must be positive")
@@ -66,12 +74,12 @@ def create_return_series(
 
     Preconditions:
         - prices is a pd.Series with numeric values
-        - prices index is DatetimeIndex or convertible to dates
-        - prices contains no negative values
+        - prices has unique, valid DatetimeIndex labels
+        - observed prices are finite and positive
 
     Postconditions:
-        - Returns a ReturnSeries with sorted, deduplicated dates
-        - First return value is NaN (no prior price)
+        - Returns a ReturnSeries with sorted dates and nonmissing returns
+        - Missing prices do not create returns across an unobserved interval
 
     Args:
         prices: Price series
@@ -143,5 +151,4 @@ def align_series(series_list: List[ReturnSeries]) -> List[ReturnSeries]:
         aligned.append(aligned_series)
 
     return aligned
-
 

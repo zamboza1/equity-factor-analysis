@@ -22,6 +22,7 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 
@@ -34,10 +35,10 @@ ENV/
 
 # Project specific
 .cache/
-reports/*.md
-reports/assets/*.png
-reports/assets/*.jpg
-reports/assets/*.jpeg
+reports/
+.env
+.env.*
+!.env.example
 
 # OS
 .DS_Store

@@ -1,8 +1,8 @@
 """
 FastAPI web interface for viewing reports.
 
-This module provides a web interface to view generated reports and run analyses.
-Implements OWASP security guidelines including input validation and sanitization.
+This local interface runs analyses and displays their saved reports.
+It has no authentication and should remain bound to loopback.
 """
 
 import sys
@@ -17,12 +17,13 @@ import html
 from pathlib import Path
 import json
 import subprocess
+from uuid import uuid4
 from typing import List, Optional, Dict
 from datetime import datetime
 
 app = FastAPI(title="Equity Factor Analysis")
 
-# Security: CORS configuration
+# Same-origin browser requests do not require CORS headers.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8000"],  # Restrict to localhost
@@ -32,13 +33,14 @@ app.add_middleware(
 )
 
 # Setup templates
-template_env = Environment(loader=FileSystemLoader("frontend/templates"))
+template_env = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"))
 
 # Mount reports directory
 reports_dir = Path("reports")
 reports_dir.mkdir(exist_ok=True)
 assets_dir = reports_dir / "assets"
 assets_dir.mkdir(exist_ok=True)
+analysis_jobs = {}
 
 app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
@@ -52,6 +54,8 @@ class AnalysisRequest(BaseModel):
 
     @validator('tickers')
     def validate_tickers(cls, v):
+        if not v:
+            raise ValueError("At least one ticker is required")
         if len(v) > 50:  # Limit max tickers per request (DoS protection)
             raise ValueError("Too many tickers (max 50)")
         validated = []
@@ -263,6 +267,8 @@ def markdown_to_html(content: str) -> str:
         # Prevent javascript: or data: XSS vectors
         if re.search(r'^\s*(javascript:|data:|vbscript:)', src, re.IGNORECASE):
             return "" # Block common XSS vectors
+        if src.startswith('assets/'):
+            src = '/' + src
         return f'<img src="{src}" alt="{alt}">'
     
     content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', image_replacer, content)
@@ -276,7 +282,7 @@ def markdown_to_html(content: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Home page with React UI."""
-    react_template = Path("frontend/templates/react_index.html")
+    react_template = Path(__file__).parent / "templates" / "react_index.html"
     if react_template.exists():
         content = react_template.read_text()
         return HTMLResponse(content=content)
@@ -334,41 +340,91 @@ async def run_analysis(request: AnalysisRequest):
         if end_date_obj.date() > today:
             raise HTTPException(status_code=400, detail="End date cannot be in the future")
         
-        if start_date_obj > end_date_obj:
+        if start_date_obj >= end_date_obj:
             raise HTTPException(status_code=400, detail="Start date must be before end date")
         
         if (end_date_obj - start_date_obj).days > 365 * 5:  # Max 5 years
             raise HTTPException(status_code=400, detail="Date range cannot exceed 5 years")
         
-        # Run analysis for each ticker
+        # Each request owns its result filename and worker log. Old ticker
+        # reports cannot satisfy a new job, even when parameters are identical.
+        started_jobs = []
         for ticker in request.tickers:
+            job_id = uuid4().hex
             cmd = [
                 sys.executable, "-W", "ignore", "-m", "backend.cli", "analyze",
                 ticker,
                 "--start", request.start_date,
-                "--end", request.end_date
+                "--end", request.end_date,
+                "--run-id", job_id
             ]
             if request.fit_sabr:
                 cmd.append("--fit-sabr")
             
-            subprocess.Popen(
-                cmd,
-                cwd=Path(__file__).parent.parent,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            job_dir = reports_dir / 'jobs'
+            job_dir.mkdir(parents=True, exist_ok=True)
+            log_path = job_dir / f'{job_id}.log'
+            with log_path.open('w') as log:
+                process = subprocess.Popen(cmd, cwd=Path.cwd(),
+                                           stdout=log, stderr=log)
+            analysis_jobs[job_id] = {
+                'job_id': job_id, 'ticker': ticker, 'status': 'running',
+                'parameters': request.model_dump() if hasattr(request, 'model_dump') else request.dict(),
+                'started_at': datetime.now().isoformat(),
+                'report_path': reports_dir / f'{ticker}_{job_id}.md',
+                'log_path': log_path, 'process': process,
+            }
+            started_jobs.append({'job_id': job_id, 'ticker': ticker, 'status': 'running'})
         
         return {
             "status": "started",
             "message": f"Analysis running for {', '.join(request.tickers)}",
-            "tickers": request.tickers
+            "tickers": request.tickers,
+            "jobs": started_jobs
         }
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unable to start analysis: {str(e)}")
+
+
+def report_results(report_path: Path, ticker: str) -> dict:
+    companion = report_path.with_suffix('.json')
+    parsed = json.loads(companion.read_text()) if companion.exists() else parse_markdown_report(report_path.read_text())
+    return {'ticker': ticker, 'report_path': report_path.name,
+            **parsed, 'date_str': parse_report_metadata(report_path)['date_str']}
+
+
+@app.get('/api/jobs/{job_id}')
+async def get_analysis_job(job_id: str):
+    job = analysis_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail='Job not found. If the server restarted, run the analysis again.')
+    if job['status'] == 'running':
+        exit_code = job['process'].poll()
+        if exit_code is not None:
+            job['finished_at'] = datetime.now().isoformat()
+            job['exit_code'] = exit_code
+            if exit_code == 0 and job['report_path'].is_file():
+                job['status'] = 'succeeded'
+            else:
+                job['status'] = 'failed'
+                tail = job['log_path'].read_bytes()[-8192:].decode(errors='replace')
+                errors = [line.split('Error:', 1)[-1].strip() for line in tail.splitlines() if 'Error:' in line]
+                job['error'] = errors[-1] if errors else f'Analysis exited with code {exit_code} without a completed report.'
+            metadata = {key: value for key, value in job.items() if key not in ['process', 'log_path', 'report_path']}
+            metadata['report_path'] = job['report_path'].name
+            job['log_path'].with_suffix('.json').write_text(json.dumps(metadata, indent=2))
+    response = {key: job[key] for key in ['job_id', 'ticker', 'status', 'parameters', 'started_at']}
+    if job['status'] == 'succeeded':
+        response['result'] = report_results(job['report_path'], job['ticker'])
+    elif job['status'] == 'failed':
+        response['error'] = job['error']
+    return response
 
 
 @app.get("/api/analysis-results/{ticker}")
@@ -376,7 +432,7 @@ async def get_analysis_results(ticker: str):
     """Get parsed analysis results for a ticker."""
     # Find latest report for this ticker
     reports = sorted(
-        [r for r in reports_dir.glob("*.md") if r.stem.startswith(ticker)],
+        [r for r in reports_dir.glob("*.md") if r.stem.split('_', 1)[0] == ticker.upper()],
         key=lambda p: p.stat().st_mtime,
         reverse=True
     )
@@ -384,25 +440,7 @@ async def get_analysis_results(ticker: str):
     if not reports:
         raise HTTPException(status_code=404, detail="No reports found for this ticker")
     
-    # Parse report content
-    report_path = reports[0]
-    content = report_path.read_text()
-    parsed_data = parse_markdown_report(content)
-    
-    metadata = parse_report_metadata(report_path)
-    
-    return {
-        "ticker": ticker,
-        "report_path": report_path.name,
-        "r_squared": parsed_data["r_squared"],
-        "factors": parsed_data["factors"],
-        "anomalies": parsed_data["anomalies"],
-        "anomalies_data": parsed_data["anomalies_data"],
-        "events": parsed_data["events"],
-        "events_data": parsed_data["events_data"],
-        "sabr": parsed_data["sabr"],
-        "date_str": metadata["date_str"]
-    }
+    return report_results(reports[0], ticker.upper())
 
 
 @app.get("/api/reports")
@@ -414,6 +452,15 @@ async def list_reports():
     }
 
 
-if __name__ == "__main__":
+def main():
+    """Start the local web interface in the current working directory."""
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    parser = argparse.ArgumentParser(description="Equity Factor Analysis web interface")
+    parser.add_argument('--port', type=int, default=8000)
+    args = parser.parse_args()
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
+
+
+if __name__ == "__main__":
+    main()

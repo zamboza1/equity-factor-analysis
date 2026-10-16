@@ -8,6 +8,9 @@ by query hash to avoid repeated network calls.
 import hashlib
 import json
 import pickle
+import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Any
 import pandas as pd
@@ -20,7 +23,8 @@ class DataCache:
 
     Caches data by computing a hash of the query parameters and storing
     the result on disk. Supports both pandas DataFrames/Series and
-    arbitrary Python objects (via pickle).
+    arbitrary Python objects (via pickle). Only read cache files from a trusted
+    local directory; pickle is not a format for untrusted imports.
 
     Representation Invariants:
         - cache_dir exists and is a directory
@@ -81,9 +85,9 @@ class DataCache:
             with open(cache_file, "rb") as f:
                 data = pickle.load(f)
             return data
-        except Exception as e:
-            # If cache file is corrupted, return None
-            raise CacheError(f"Failed to read cache file: {e}") from e
+        except Exception:
+            logging.getLogger(__name__).warning("Ignoring unreadable cache entry %s", cache_file.name)
+            return None
 
     def set(self, query_params: dict, data: Any) -> None:
         """
@@ -104,11 +108,19 @@ class DataCache:
         cache_key = self._compute_hash(query_params)
         cache_file = self.cache_dir / f"{cache_key}.pkl"
 
+        temporary = None
         try:
-            with open(cache_file, "wb") as f:
-                pickle.dump(data, f)
+            with tempfile.NamedTemporaryFile(mode="wb", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
+                temporary = Path(f.name)
+                pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+                f.flush()
+                os.fsync(f.fileno())
+            temporary.replace(cache_file)
         except Exception as e:
             raise CacheError(f"Failed to write cache file: {e}") from e
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def clear(self) -> None:
         """
@@ -133,5 +145,4 @@ class DataCache:
         cache_key = self._compute_hash(query_params)
         cache_file = self.cache_dir / f"{cache_key}.pkl"
         return cache_file.exists()
-
 

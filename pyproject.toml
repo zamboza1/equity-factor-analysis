@@ -2,11 +2,11 @@
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["backend"]
+[tool.setuptools.packages.find]
+include = ["backend*"]
 
 [tool.setuptools.package-data]
-backend = ["py.typed"]
+backend = ["templates/*.html", "data/*.csv", "data/*.yaml"]
 
 [project]
 name = "stock-factor-analysis"
@@ -35,12 +35,14 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    "httpx>=0.24.0",
     "black>=23.0.0",
     "mypy>=1.5.0",
 ]
 
 [project.scripts]
 analysis = "backend.cli:main"
+analysis-web = "backend.web:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -51,4 +53,3 @@ python_functions = "test_*"
 [tool.black]
 line-length = 100
 target-version = ['py311']
-

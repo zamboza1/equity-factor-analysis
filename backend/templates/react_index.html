@@ -92,7 +92,7 @@
                     <div className="text-slate-400 text-sm font-medium tracking-wide uppercase flex items-center">
                         {label}
                         {tooltip && (
-                            <span className="ml-1 text-slate-500 cursor-help" title={tooltip}>ⓘ</span>
+                            <span className="ml-1 text-slate-500 cursor-help" title={tooltip} role="img" tabIndex={0} aria-label={`${label}: ${tooltip}`}>ⓘ</span>
                         )}
                     </div>
                     <div className="text-3xl font-bold text-white mt-1">{value}</div>
@@ -101,7 +101,7 @@
                         {subtext && <span className="text-slate-500 ml-2 text-xs">{subtext}</span>}
                     </div>
                     {tooltip && (
-                        <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-10 w-64 p-2 text-xs text-slate-300 bg-slate-900 border border-slate-700 rounded shadow-lg">
+                        <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block group-focus-within:block z-10 w-64 p-2 text-xs text-slate-300 bg-slate-900 border border-slate-700 rounded shadow-lg">
                             {tooltip}
                         </div>
                     )}
@@ -137,7 +137,7 @@
                                         <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
                                             {columns.map(col => (
                                                 <td key={col} className="py-3 px-4 text-slate-300 font-mono">
-                                                    {typeof row[col] === 'number' ? row[col].toFixed(3) : row[col]}
+                                                    {typeof row[col] === 'number' ? (col === 'p-value' && row[col] < 0.001 ? '<0.001' : row[col].toFixed(3)) : row[col]}
                                                 </td>
                                             ))}
                                         </tr>
@@ -174,10 +174,15 @@
         function App() {
             const [loading, setLoading] = useState(false);
             const [ticker, setTicker] = useState("AAPL");
-            const today = new Date().toISOString().split('T')[0];
+            const todayDate = new Date();
+            const sixMonthsAgo = new Date(todayDate);
+            sixMonthsAgo.setMonth(todayDate.getMonth() - 6);
+            const todayStr = todayDate.toISOString().split('T')[0];
+            const startDateStr = sixMonthsAgo.toISOString().split('T')[0];
+
             const minDate = "2000-01-01";
-            const [startDate, setStartDate] = useState("2023-01-01");
-            const [endDate, setEndDate] = useState(today);
+            const [startDate, setStartDate] = useState(startDateStr);
+            const [endDate, setEndDate] = useState(todayStr);
             const [fitSABR, setFitSABR] = useState(true);
             const [results, setResults] = useState(null);
             const [error, setError] = useState(null);
@@ -211,12 +216,12 @@
                     setLoading(false);
                     return;
                 }
-                if (endDate > today) {
+                if (endDate > todayStr) {
                     setError('End date cannot be in the future');
                     setLoading(false);
                     return;
                 }
-                if (startDate > endDate) {
+                if (startDate >= endDate) {
                     setError('Start date must be before end date');
                     setLoading(false);
                     return;
@@ -234,58 +239,38 @@
                         })
                     });
 
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.detail || 'Analysis failed');
-                    }
-
-                    // Poll for results (since analysis runs in background)
-                    let pollCount = 0;
-                    const maxPolls = 30; // 60 seconds total (2s * 30)
-
-                    const pollInterval = setInterval(async () => {
-                        pollCount++;
-                        try {
-                            // Get parsed results from API
-                            const resultsResponse = await fetch(`/api/analysis-results/${ticker}`);
-                            if (resultsResponse.ok) {
-                                const resultsData = await resultsResponse.json();
-
-                                setResults({
-                                    ticker: ticker,
-                                    r_squared: resultsData.r_squared || 0,
-                                    factors: resultsData.factors || [],
-                                    anomalies: resultsData.anomalies || 0,
-                                    anomalies_data: resultsData.anomalies_data || [],
-                                    events: resultsData.events || 0,
-                                    events_data: resultsData.events_data || [],
-                                    sabr: resultsData.sabr || null
-                                });
-
-                                clearInterval(pollInterval);
-                                setLoading(false);
-                                return;
-                            }
-                        } catch (err) {
-                            // Report might not exist yet, continue polling
-                            if (err.message && !err.message.includes('404')) {
-                                console.error('Polling error:', err);
-                            }
-                        }
-
-                        // Timeout after max polls
-                        if (pollCount >= maxPolls) {
-                            clearInterval(pollInterval);
-                            setError('Analysis is taking longer than expected. Results will appear when ready.');
+                    const submitted = await response.json();
+                    const message = (detail) => Array.isArray(detail)
+                        ? detail.map(item => item.msg || String(item)).join('; ')
+                        : (detail || 'Analysis request failed');
+                    if (!response.ok) throw new Error(message(submitted.detail));
+                    const jobId = submitted.jobs[0].job_id;
+                    // Poll this request's worker until it reaches a terminal state.
+                    // Slow valid jobs remain tracked beyond the former 60-second cutoff.
+                    while (true) {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        const statusResponse = await fetch(`/api/jobs/${jobId}`);
+                        const job = await statusResponse.json();
+                        if (!statusResponse.ok) throw new Error(message(job.detail));
+                        if (job.status === 'failed') throw new Error(job.error || 'Analysis failed');
+                        if (job.status === 'succeeded') {
+                            setResults(job.result);
                             setLoading(false);
+                            break;
                         }
-                    }, 2000);
+                    }
 
                 } catch (err) {
                     setError(err.message);
                     setLoading(false);
                 }
             };
+
+            // Editing the submitted inputs invalidates their displayed results.
+            useEffect(() => {
+                setResults(null);
+                setError(null);
+            }, [ticker, startDate, endDate, fitSABR]);
 
             // Render factor chart
             useEffect(() => {
@@ -339,7 +324,7 @@
                                     title: function (context) {
                                         const factor = results.factors[context[0].dataIndex];
                                         const factorDescriptions = {
-                                            'Market': 'Market Factor (vs S&P 500)',
+                                            'Market': 'Market Factor (CRSP market excess return)',
                                             'Value': 'Value Factor (High B/M vs Low B/M)',
                                             'Size': 'Size Factor (Small Cap vs Large Cap)',
                                             'Momentum': 'Momentum Factor (Winners vs Losers)'
@@ -354,7 +339,7 @@
                                             `p-value: ${factor['p-value'].toFixed(4)}`,
                                             '',
                                             factor.Beta > 0 ? '↑ Moves WITH this factor' : '↓ Moves AGAINST this factor',
-                                            Math.abs(factor['t-stat']) > 2 ? '★ Statistically significant' : '○ Not statistically significant'
+                                            factor['p-value'] < 0.05 ? '★ Statistically significant' : '○ Not statistically significant'
                                         ];
                                     }
                                 }
@@ -377,18 +362,18 @@
             }, [results]);
 
             return (
-                <div className="flex w-full h-full bg-[#0F172A]">
+                <div className="flex flex-col md:flex-row w-full h-full overflow-y-auto md:overflow-hidden bg-[#0F172A]">
                     {/* SIDEBAR */}
-                    <div className="w-80 glass-panel p-6 flex flex-col shrink-0 overflow-y-auto">
+                    <div className="w-full md:w-80 glass-panel p-6 flex flex-col shrink-0 md:overflow-y-auto">
                         <div className="mb-8">
                             <h1 className="text-lg font-semibold tracking-tight text-slate-300">Equity Factor Analysis</h1>
                         </div>
 
                         <div className="mb-6">
-                            <label className="block text-slate-400 text-sm font-medium mb-2">Stock</label>
+                            <label className="block text-slate-400 text-sm font-medium mb-2" htmlFor="ticker">Stock</label>
                             <div className="flex gap-2">
-                                <input
-                                    type="text"
+                                <input disabled={loading}
+                                    type="text" id="ticker"
                                     value={ticker}
                                     onChange={(e) => setTicker(e.target.value.toUpperCase())}
                                     placeholder="Enter ticker (e.g., AAPL)"
@@ -400,6 +385,7 @@
                                 {["AAPL", "MSFT", "GOOGL", "TSLA", "SPY", "QQQ"].map(t => (
                                     <button
                                         key={t}
+                                        disabled={loading}
                                         onClick={() => setTicker(t)}
                                         className={`px-2 py-1 text-xs rounded ${ticker === t ? 'bg-sky-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
                                     >
@@ -410,15 +396,15 @@
                         </div>
 
                         <div className="mb-6">
-                            <label className="block text-slate-400 text-sm font-medium mb-2">Start Date</label>
-                            <input
-                                type="date"
+                            <label className="block text-slate-400 text-sm font-medium mb-2" htmlFor="start-date">Start Date</label>
+                            <input disabled={loading}
+                                type="date" id="start-date"
                                 value={startDate}
                                 min={minDate}
-                                max={today}
+                                max={todayStr}
                                 onChange={(e) => {
                                     const newDate = e.target.value;
-                                    if (newDate >= minDate && newDate <= today) {
+                                    if (newDate >= minDate && newDate <= todayStr) {
                                         setStartDate(newDate);
                                     }
                                 }}
@@ -427,15 +413,15 @@
                         </div>
 
                         <div className="mb-6">
-                            <label className="block text-slate-400 text-sm font-medium mb-2">End Date</label>
-                            <input
-                                type="date"
+                            <label className="block text-slate-400 text-sm font-medium mb-2" htmlFor="end-date">End Date (exclusive)</label>
+                            <input disabled={loading}
+                                type="date" id="end-date"
                                 value={endDate}
                                 min={minDate}
-                                max={today}
+                                max={todayStr}
                                 onChange={(e) => {
                                     const newDate = e.target.value;
-                                    if (newDate >= minDate && newDate <= today) {
+                                    if (newDate >= minDate && newDate <= todayStr) {
                                         setEndDate(newDate);
                                     }
                                 }}
@@ -445,24 +431,24 @@
 
                         {/* Date Notes */}
                         <div className="mb-6 p-3 bg-slate-800/50 rounded-lg text-xs text-slate-500">
-                            <p className="font-medium text-slate-400 mb-1">📅 Date Notes:</p>
+                            <p className="font-medium text-slate-400 mb-1">Date Notes:</p>
                             <ul className="space-y-1">
                                 <li>• Valid range: 2000-01-01 to today</li>
                                 <li>• Max span: 5 years per analysis</li>
-                                <li>• Longer ranges = better correlation stats</li>
-                                <li>• 1+ year recommended for factor analysis</li>
+                                <li>• End date is excluded</li>
+                                <li>• At least 30 aligned observations for factors</li>
                             </ul>
                         </div>
 
                         <div className="mb-6">
                             <label className="flex items-center space-x-2 cursor-pointer">
-                                <input
+                                <input disabled={loading}
                                     type="checkbox"
                                     checked={fitSABR}
                                     onChange={(e) => setFitSABR(e.target.checked)}
                                     className="w-4 h-4 rounded bg-slate-800 border-slate-700"
                                 />
-                                <span className="text-slate-300 text-sm">Include SABR Analysis</span>
+                                <span className="text-slate-300 text-sm">Include current options (SABR)</span>
                             </label>
                         </div>
 
@@ -482,17 +468,17 @@
 
                         <div className="mt-auto pt-6">
                             <div className="p-4 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-500">
-                                Equity Factor Radar
+                                Equity Factor Analysis
                             </div>
                         </div>
                     </div>
 
                     {/* MAIN CONTENT */}
-                    <div className="flex-1 flex flex-col p-8 overflow-y-auto">
+                    <div className="flex-none md:flex-1 min-w-0 flex flex-col p-4 md:p-8 md:overflow-y-auto">
                         {!results && !loading && (
                             <div className="flex-1 flex items-center justify-center">
                                 <div className="text-center">
-                                    <h2 className="text-xl font-semibold text-slate-300 mb-2">Equity Factor Radar</h2>
+                                    <h2 className="text-xl font-semibold text-slate-300 mb-2">Equity Factor Analysis</h2>
                                     <p className="text-slate-500 text-sm">Configure settings and run analysis to begin</p>
                                 </div>
                             </div>
@@ -509,8 +495,17 @@
 
                         {results && (
                             <>
+                                {results.report_path && (
+                                    <a className="text-cyan-400 underline mb-4" href={`/report/${encodeURIComponent(results.report_path)}`}>
+                                        Open this run’s full report
+                                    </a>
+                                )}
+                                <p className="text-sm text-slate-400 mb-4">
+                                    {results.analysis_metadata?.['Requested price/factor range']}
+                                    {results.n_observations != null && ` · ${results.n_observations} factor observations`}
+                                </p>
                                 {/* HEADER METRICS */}
-                                <div className="grid grid-cols-4 gap-6 mb-8">
+                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-8">
                                     <MetricCard
                                         label="Ticker"
                                         value={results.ticker}
@@ -519,17 +514,17 @@
                                     <MetricCard
                                         label="R² (Fit Quality)"
                                         value={results.r_squared ? results.r_squared.toFixed(3) : "0.000"}
-                                        tooltip="How much of the stock's movement is explained by our 4 factors. 1.0 means perfect explanation, 0.0 means none. Typical stocks are between 0.05 and 0.20."
+                                        tooltip="Fraction of sample excess-return variation explained by the four-factor fit; not forecast accuracy."
                                     />
                                     <MetricCard
                                         label="Anomalies"
                                         value={String(results.anomalies || 0)}
-                                        tooltip="Unusual days when the stock's relationship with other assets (like Gold or Bonds) broke down or became much stronger than normal."
+                                        tooltip="Pair/date alerts above a descriptive z-score threshold; not a calibrated significance test."
                                     />
                                     <MetricCard
                                         label="Macro Events"
                                         value={String(results.events || 0)}
-                                        tooltip="Major economic news releases (like inflation or job data) that happened during your analysis period."
+                                        tooltip="Analyzed events from the supplied partial calendar within the selected date range."
                                     />
                                 </div>
 
@@ -556,13 +551,13 @@
                                                 relative to the broader market. These are computed via regression analysis.
                                             </p>
                                             <ul className="text-slate-400 text-xs space-y-1">
-                                                <li><span className="text-cyan-400">Market β</span>: Sensitivity to overall market returns (vs S&P 500)</li>
+                                                <li><span className="text-cyan-400">Market β</span>: Sensitivity to the academic CRSP market excess return</li>
                                                 <li><span className="text-cyan-400">Value β</span>: Exposure to value vs growth stocks (high book-to-market vs low)</li>
                                                 <li><span className="text-cyan-400">Size β</span>: Exposure to small-cap vs large-cap stocks</li>
                                                 <li><span className="text-cyan-400">Momentum β</span>: Exposure to recent winners vs losers</li>
                                             </ul>
                                             <p className="text-slate-500 text-xs mt-2">
-                                                |t-stat| &gt; 2 indicates statistical significance at 95% confidence level
+                                                p-value &lt; 0.05 flags a two-sided test against zero exposure under the OLS assumptions
                                             </p>
                                         </div>
 
@@ -578,13 +573,29 @@
                                     </div>
                                 </div>
 
+                                <p className="text-sm text-slate-400 mb-4">
+                                    Calendar coverage may be incomplete. Correlation alerts count pair/date observations, not distinct days.
+                                </p>
+                                {results.analysis_metadata?.['Correlation scan coverage'] && (
+                                    <p className="text-sm text-slate-400 mb-4">
+                                        Correlation coverage: {results.analysis_metadata['Correlation scan coverage'].successful} successful / {results.analysis_metadata['Correlation scan coverage'].attempted} attempted; {results.analysis_metadata['Correlation scan coverage'].skipped} skipped; {results.analysis_metadata['Correlation scan coverage'].failed} failed.
+                                    </p>
+                                )}
+                                {results.events_data && results.events_data.length > 0 && (
+                                    <div className="mb-8">
+                                        <DataTable title="Macro Event Impacts" data={results.events_data}
+                                            columns={['Event', 'Date', 'Post-Return', 'Cumulative', 'Data']}
+                                            explanation="Decimal log returns. Daily values are close-to-close proxies; no causal or market-adjusted effect is claimed." />
+                                        {results.event_chart_url && <img className="w-full mt-4" src={results.event_chart_url} alt="Dated macro event impacts" />}
+                                    </div>
+                                )}
                                 {/* DATA TABLES */}
-                                <div className="grid grid-cols-2 gap-6 mb-8">
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
                                     <DataTable
                                         title="Factor Betas (Detailed)"
                                         data={results.factors || []}
                                         columns={['Factor', 'Beta', 't-stat', 'p-value']}
-                                        explanation="Beta = sensitivity coefficient. t-stat = statistical significance (|t| > 2 is significant). p-value = probability this result is random chance."
+                                        explanation="Beta = sensitivity coefficient. t-stat = coefficient divided by its standard error. p-value = tail probability under a zero-exposure null and the OLS assumptions."
                                     />
                                     <DataTable
                                         title={`Correlation Anomalies (Top 10 of ${results.anomalies || 0})`}
@@ -597,82 +608,79 @@
                                                 <br /><br />
                                                 <strong>Universe:</strong> Compared against ~40 assets: SPY, QQQ, TLT, GLD, sector ETFs (XLF, XLE, XLK...), and top S&P 100 stocks.
                                                 <br /><br />
-                                                <strong>Interpretation:</strong> Z &gt; 2 = unusually high correlation (contagion risk); Z &lt; -2 = correlation breakdown (regime change).
+                                                <strong>Interpretation:</strong> Scores compare a rolling correlation with the initial baseline. They do not establish contagion, a regime change or a formal significance level.
                                             </span>
                                         }
                                     />
                                 </div>
 
                                 {/* SABR SECTION */}
-                                {results.sabr && (
+                                {fitSABR && (
                                     <div className="mb-8">
                                         <div className="glass p-6 rounded-xl">
                                             <h3 className="text-lg font-semibold text-white mb-2">Options Volatility Smile (SABR Model)</h3>
+                                            <p className="text-sm text-slate-400 mb-4">Current options snapshot, independent of the historical price range. Spot approximates the forward; date-only expiries assume 16:00 Eastern. A converged fit does not establish pricing validity.</p>
+                                            {results.sabr_rmse != null && <p className="text-sm text-slate-300 mb-4">Fit RMSE: {results.sabr_rmse.toExponential(3)} · Maturity: {results.sabr_maturity.toFixed(6)} years</p>}
+                                            {results.sabr_chart_url && <img className="w-full mb-4" src={results.sabr_chart_url} alt="Observed and fitted SABR implied volatility" />}
 
-                                            {/* Explanation */}
-                                            <div className="bg-slate-800/50 rounded-lg p-4 mb-4 text-sm">
-                                                <div className="bg-amber-900/30 border border-amber-700/50 rounded p-2 mb-3 text-amber-200 text-xs">
-                                                    ⚠️ <strong>Note:</strong> This section analyzes <strong>OPTIONS</strong> on the stock, not the stock price itself.
-                                                </div>
-                                                <p className="text-slate-300 mb-2"><strong>What is the Volatility Smile?</strong></p>
-                                                <p className="text-slate-400 mb-2">
-                                                    When you look at the prices of options at different strike prices, you'll notice that
-                                                    <strong>out-of-the-money puts</strong> (crash protection) are usually <strong>more expensive</strong>
-                                                    than at-the-money options. This creates a "smile" shape when plotted.
-                                                </p>
-                                                <p className="text-slate-400 mb-3">
-                                                    <strong>Why it matters:</strong> The SABR model "connects the dots" between these option prices
-                                                    to quantify how much "fear" (crash risk) is priced into the market. A steep skew (negative ρ)
-                                                    means investors are paying a premium for downside protection.
-                                                    <br /><br />
-                                                    <span className="text-slate-500 italic">Note: SABR is also the gold standard for interest rate options (Swaptions, Caps/Floors).</span>
-                                                </p>
-                                                <div className="grid grid-cols-2 gap-4 text-xs">
-                                                    <div>
-                                                        <span className="text-sky-400 font-semibold">α (alpha) - The Baseline</span>
-                                                        <p className="text-slate-400">The overall level of volatility. Higher = more expensive options across the board.</p>
+                                            {results.sabr ? (
+                                                <>
+                                                    {/* Explanation */}
+                                                    <div className="bg-slate-800/50 rounded-lg p-4 mb-4 text-sm">
+                                                        <div className="bg-amber-900/30 border border-amber-700/50 rounded p-2 mb-3 text-amber-200 text-xs">
+                                                            <strong>Note:</strong> This section analyzes <strong>OPTIONS</strong> implied volatility, not underlying price action.
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-4 text-xs">
+                                                            <div>
+                                                                <span className="text-sky-400 font-semibold">α (alpha) - Volatility scale</span>
+                                                                <p className="text-slate-400">Sets the volatility scale; ATM IV also depends on the forward, β and maturity.</p>
+                                                            </div>
+                                                            <div>
+                                                                <span className="text-sky-400 font-semibold">β (beta) - CEV exponent</span>
+                                                                <p className="text-slate-400">Controls how volatility changes as the stock price moves. Fixed at 0.5 in this application.</p>
+                                                            </div>
+                                                            <div>
+                                                                <span className="text-sky-400 font-semibold">ρ (rho) - Shock correlation</span>
+                                                                <p className="text-slate-400">Correlation between forward and volatility shocks in the model; affects smile asymmetry.</p>
+                                                            </div>
+                                                            <div>
+                                                                <span className="text-sky-400 font-semibold">ν (nu) - Volatility of volatility</span>
+                                                                <p className="text-slate-400">Controls variation in model volatility and affects smile curvature; it is not an event probability.</p>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <div>
-                                                        <span className="text-sky-400 font-semibold">β (beta) - The Backbone</span>
-                                                        <p className="text-slate-400">Controls how volatility changes as the stock price moves. Usually set to 0.5 for equities.</p>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-sky-400 font-semibold">ρ (rho) - The Fear Gauge</span>
-                                                        <p className="text-slate-400">Negative ρ means volatility rises when prices fall — it's the "fear factor" that makes crash protection expensive.</p>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-sky-400 font-semibold">ν (nu) - The Tail Risk</span>
-                                                        <p className="text-slate-400">Higher ν means more "curvy" smile, indicating a higher perceived risk of extreme "black swan" moves.</p>
-                                                    </div>
-                                                </div>
-                                                <p className="text-slate-500 text-xs mt-3">
-                                                    <strong>Note:</strong> SABR is calibrated to a single expiry. Parameters vary across expiries (the "volatility surface").
-                                                    This tool uses the nearest available expiry.
-                                                </p>
-                                            </div>
 
-                                            <div className="grid grid-cols-4 gap-4">
-                                                <MetricCard
-                                                    label="α (alpha)"
-                                                    value={typeof results.sabr.alpha === 'number' ? results.sabr.alpha.toFixed(4) : results.sabr.alpha}
-                                                    tooltip="ATM volatility level"
-                                                />
-                                                <MetricCard
-                                                    label="β (beta)"
-                                                    value={typeof results.sabr.beta === 'number' ? results.sabr.beta.toFixed(2) : results.sabr.beta}
-                                                    tooltip="CEV backbone exponent (fixed at 0.5 for equity)"
-                                                />
-                                                <MetricCard
-                                                    label="ρ (rho)"
-                                                    value={typeof results.sabr.rho === 'number' ? results.sabr.rho.toFixed(2) : results.sabr.rho}
-                                                    tooltip="Spot-vol correlation (negative = downside skew)"
-                                                />
-                                                <MetricCard
-                                                    label="ν (nu)"
-                                                    value={typeof results.sabr.nu === 'number' ? results.sabr.nu.toFixed(4) : results.sabr.nu}
-                                                    tooltip="Volatility of volatility (smile curvature)"
-                                                />
-                                            </div>
+                                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                                        <MetricCard
+                                                            label="α (alpha)"
+                                                            value={typeof results.sabr.alpha === 'number' ? results.sabr.alpha.toFixed(4) : results.sabr.alpha}
+                                                            tooltip="Volatility scale; ATM IV also depends on forward, beta and maturity"
+                                                        />
+                                                        <MetricCard
+                                                            label="β (beta)"
+                                                            value={typeof results.sabr.beta === 'number' ? results.sabr.beta.toFixed(2) : results.sabr.beta}
+                                                            tooltip="CEV backbone exponent (fixed at 0.5 for equity)"
+                                                        />
+                                                        <MetricCard
+                                                            label="ρ (rho)"
+                                                            value={typeof results.sabr.rho === 'number' ? results.sabr.rho.toFixed(2) : results.sabr.rho}
+                                                            tooltip="Spot-vol correlation (negative = downside skew)"
+                                                        />
+                                                        <MetricCard
+                                                            label="ν (nu)"
+                                                            value={typeof results.sabr.nu === 'number' ? results.sabr.nu.toFixed(4) : results.sabr.nu}
+                                                            tooltip="Volatility of volatility (smile curvature)"
+                                                        />
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="p-8 text-center bg-slate-800/30 rounded-lg border border-slate-700 border-dashed">
+                                                    <div className="text-amber-500 mb-2 font-medium">No SABR Analysis Available</div>
+                                                    <p className="text-slate-400 text-sm max-w-md mx-auto">
+                                                        {results.analysis_metadata?.['SABR status'] || 'No SABR result was produced; see this run’s full report.'}
+                                                    </p>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 )}

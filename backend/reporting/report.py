@@ -1,12 +1,14 @@
 """
 Markdown report generation.
 
-This module generates comprehensive markdown reports with factor analysis,
+This module generates Markdown reports with factor analysis,
 correlation anomalies, event impacts, and SABR fits.
 """
 
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
+import json
 from typing import List, Optional
 import pandas as pd
 import numpy as np
@@ -26,7 +28,7 @@ class Report:
     Generates markdown reports with analysis results.
 
     This class assembles factor models, correlation anomalies, event impacts,
-    and SABR fits into a comprehensive markdown report with charts.
+    and SABR fits into a Markdown report with charts.
     """
 
     def __init__(self, output_dir: str = "reports"):
@@ -50,7 +52,9 @@ class Report:
         sabr_strikes: Optional[np.ndarray] = None,
         sabr_ivs: Optional[np.ndarray] = None,
         sabr_forward: Optional[float] = None,
-        sabr_time_to_expiry: Optional[float] = None
+        sabr_time_to_expiry: Optional[float] = None,
+        run_id: Optional[str] = None,
+        analysis_metadata: Optional[dict] = None
     ) -> str:
         """
         Generate complete markdown report.
@@ -71,14 +75,20 @@ class Report:
             Path to generated report file
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_filename = f"{ticker}_{timestamp}.md"
+        identity = run_id or f'{timestamp}_{uuid4().hex[:8]}'
+        if not identity or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in identity):
+            raise ValueError('Invalid run ID')
+        report_filename = f"{ticker}_{identity}.md"
         report_path = self.output_dir / report_filename
 
         # Create assets directory
-        assets_dir = create_report_assets_dir(self.output_dir)
+        assets_dir = create_report_assets_dir(self.output_dir) / identity
+        assets_dir.mkdir(parents=True, exist_ok=False)
 
         # Generate report content
         content = self._generate_header(ticker, asset)
+        if analysis_metadata:
+            content += '\n'.join(f'**{key}:** {value}  ' for key,value in analysis_metadata.items()) + '\n\n'
         content += self._generate_factor_section(factor_result, assets_dir, ticker)
         content += self._generate_correlation_section(anomalies, assets_dir)
         content += self._generate_event_section(event_impacts, assets_dir)
@@ -88,9 +98,44 @@ class Report:
         )
         content += self._generate_footer()
 
+        # Keep numerical precision and ticker identity outside Markdown parsing.
+        # The Markdown remains the human-readable artifact, with an atomic
+        # structured companion used by newly completed browser jobs.
+        top = CorrelationRadar().get_top_anomalies(anomalies, n=10) if anomalies else []
+        structured = {
+            'ticker': ticker,
+            'r_squared': factor_result.r_squared if factor_result else None,
+            'n_observations': factor_result.n_observations if factor_result else None,
+            'factors': [{'Factor': name, 'Beta': factor_result.betas[name],
+                         't-stat': factor_result.t_stats[name],
+                         'p-value': factor_result.p_values[name]}
+                        for name in factor_result.factor_names] if factor_result else [],
+            'anomalies': len(anomalies),
+            'anomalies_data': [{'Date': a.date.strftime('%Y-%m-%d'),
+                               'Pair': '-'.join(a.pair), 'Correlation': a.correlation,
+                               'Z-Score': a.z_score} for a in top],
+            'events': len(event_impacts),
+            'events_data': [{'Ticker': e.ticker, 'Event': e.event.name,
+                            'Date': e.event.timestamp.strftime('%Y-%m-%d'),
+                            'Post-Return': e.post_event_return,
+                            'Cumulative': e.cumulative_return, 'Data': e.data_type}
+                           for e in event_impacts],
+            'sabr': vars(sabr_result.params) if sabr_result else None,
+            'sabr_rmse': sabr_result.fit_error if sabr_result else None,
+            'sabr_maturity': sabr_time_to_expiry,
+            'analysis_metadata': analysis_metadata or {},
+            'event_chart_url': f'/assets/{identity}/event_impact.png' if (assets_dir/'event_impact.png').exists() else None,
+            'sabr_chart_url': f'/assets/{identity}/sabr_fit.png' if (assets_dir/'sabr_fit.png').exists() else None,
+        }
+        json_temporary = report_path.with_suffix('.json.tmp')
+        json_temporary.write_text(json.dumps(structured, indent=2, default=float, allow_nan=False))
+        json_temporary.replace(report_path.with_suffix('.json'))
+
         # Write report
-        with open(report_path, "w") as f:
+        temporary_path = report_path.with_suffix('.tmp')
+        with open(temporary_path, "w") as f:
             f.write(content)
+        temporary_path.replace(report_path)
 
         return str(report_path)
 
@@ -123,7 +168,7 @@ class Report:
         # Explanation
         section += "> **What are Factor Betas?** Factor betas measure how much a stock's returns "
         section += "move with common risk factors. They are computed via OLS regression of the stock's "
-        section += "returns against factor returns. A beta of 1.0 means the stock moves 1:1 with the factor.\n\n"
+        section += "returns against factor returns. A beta of 1.0 is a fitted one-unit excess-return response to a one-unit factor change, holding the other factors fixed.\n\n"
         
         section += "**Factor Definitions (Academic Fama-French):**\n"
         section += "- **Market (Mkt-RF)**: Excess return on the market portfolio (CRSP universe minus Risk-Free Rate)\n"
@@ -139,7 +184,7 @@ class Report:
             beta = factor_result.betas[factor_name]
             t_stat = factor_result.t_stats[factor_name]
             p_val = factor_result.p_values[factor_name]
-            significant = "✓ Yes" if abs(t_stat) > 2 else "No"
+            significant = "✓ Yes" if p_val < 0.05 else "No"
             section += f"| {factor_name} | {beta:.4f} | {t_stat:.2f} | {p_val:.4f} | {significant} |\n"
         
         section += "\n"
@@ -152,8 +197,8 @@ class Report:
         interpretation = model.interpret(factor_result)
         section += f"**Interpretation:** {interpretation}\n\n"
         
-        section += "> *Statistical significance: |t-stat| > 2 indicates the factor exposure is "
-        section += "significantly different from zero at 95% confidence level.*\n\n"
+        section += "> *Statistical significance uses p-value < 0.05 for a two-sided test "
+        section += "against zero exposure under the fitted OLS assumptions.*\n\n"
         section += "---\n\n"
 
         return section
@@ -168,7 +213,7 @@ class Report:
         
         # Explanation
         section += "> **What are Correlation Anomalies?** These are dates when the rolling correlation "
-        section += "between this stock and another asset deviated significantly from its historical norm. "
+        section += "between this stock and another asset deviated from the initial empirical baseline. "
         section += "A high positive z-score means unusually high correlation; a negative z-score means "
         section += "unusually low or negative correlation.\n\n"
         
@@ -176,9 +221,8 @@ class Report:
         section += "and major S&P 100 stocks.\n\n"
         
         if not anomalies:
-            section += "*No significant correlation anomalies detected (|z-score| < 2.0).*\n\n"
-            section += "This means correlations between this asset and comparison assets "
-            section += "are within normal historical ranges.\n\n"
+            section += "*No correlation alerts recorded.*\n\n"
+            section += "No alerts were recorded. Missing or skipped comparisons do not establish normal correlations; consult the scan coverage.\n\n"
             section += "---\n\n"
             return section
 
@@ -188,9 +232,7 @@ class Report:
 
         section += f"### Top {len(top_anomalies)} Anomalies\n\n"
         section += f"**Selection:** Showing top 10 by |z-score| out of **{len(anomalies)} total** anomalies detected.\n\n"
-        section += "**Why Top 10?** Displaying all anomalies would be overwhelming. The most extreme z-scores "
-        section += "represent the most unusual correlation behavior and are most likely to signal meaningful "
-        section += "market events (sector rotation, contagion, regime changes).\n\n"
+        section += "Scores rank departures from the baseline; they do not identify a cause or a market regime.\n\n"
         section += "| Date | Pair | Correlation | Z-Score | Interpretation |\n"
         section += "|------|------|-------------|----------|----------------|\n"
         
@@ -204,7 +246,7 @@ class Report:
             section += f"| {anomaly.date.strftime('%Y-%m-%d')} | {anomaly.pair[0]}-{anomaly.pair[1]} | {anomaly.correlation:.3f} | {anomaly.z_score:.2f} | {interp} |\n"
         
         section += "\n"
-        section += "> *Z-score threshold: ±2.0 (corresponds to 95% confidence interval). "
+        section += "> *Z-score threshold: ±2.0 (a descriptive threshold, not a calibrated confidence interval). "
         section += "Rolling window: 30 trading days.*\n\n"
         section += "---\n\n"
 
@@ -220,9 +262,7 @@ class Report:
         
         if not event_impacts:
             section += "*No event impact data available.*\n\n"
-            section += "Macro event analysis requires 1-minute intraday data, which is only "
-            section += "available from yfinance for the past 7 days. If no CPI/NFP/FOMC events "
-            section += "occurred recently, this section will be empty.\n\n"
+            section += "No verified event impacts are available for this range. The bundled calendar covers a partial October–December 2024 sample; missing calendar or price coverage is not evidence of no events.\n\n"
             section += "---\n\n"
             return section
         
@@ -231,6 +271,7 @@ class Report:
         summary_df = study.summarize_impacts(event_impacts)
 
         section += "### Event Impact Summary\n\n"
+        section += "Returns are decimal log returns. Daily results are close-to-close proxies, not causal or market-adjusted effects.\n\n"
         section += "| Ticker | Event | Date | Post-Return | Cumulative | Data |\n"
         section += "|--------|-------|------|-------------|------------|------|\n"
         
@@ -246,7 +287,7 @@ class Report:
             try:
                 chart_path = assets_dir / "event_impact.png"
                 plot_event_impact(event_impacts, str(chart_path))
-                section += f"![Event Impact](assets/event_impact.png)\n\n"
+                section += f"![Event Impact](assets/{assets_dir.name}/event_impact.png)\n\n"
             except Exception:
                 pass
 
@@ -264,14 +305,11 @@ class Report:
         assets_dir: Path
     ) -> str:
         """Generate SABR fit section."""
-        section = "## Options Volatility Surface (SABR)\n\n"
+        section = "## Options Volatility Smile (SABR)\n\n"
         
         if sabr_result is None or sabr_strikes is None or sabr_ivs is None:
             section += "*No SABR analysis available.*\n\n"
-            section += "SABR calibration requires options chain data. This may be unavailable if:\n"
-            section += "- The ticker doesn't have actively traded options\n"
-            section += "- yfinance options data fetch failed\n"
-            section += "- Options data fetch failed (check yfinance connection)\n\n"
+            section += "Consult SABR status above: the analysis may be disabled, unavailable or failed.\n\n"
             section += "---\n\n"
             return section
 
@@ -282,10 +320,10 @@ class Report:
         section += "### SABR Parameters\n\n"
         section += "| Parameter | Value | Description |\n"
         section += "|-----------|-------|-------------|\n"
-        section += f"| α (alpha) | {sabr_result.params.alpha:.4f} | ATM volatility level - higher means more volatile options |\n"
-        section += f"| β (beta) | {sabr_result.params.beta:.2f} | CEV backbone (0-1). β=1 is lognormal, β=0 is normal. Fixed at 0.5 for equities |\n"
-        section += f"| ρ (rho) | {sabr_result.params.rho:.2f} | Spot-vol correlation. Negative = downside skew (puts more expensive than calls) |\n"
-        section += f"| ν (nu) | {sabr_result.params.nu:.4f} | Vol-of-vol. Higher = more smile curvature, fatter tails |\n\n"
+        section += f"| α (alpha) | {sabr_result.params.alpha:.4f} | Volatility scale; ATM IV also depends on forward, beta and the time correction |\n"
+        section += f"| β (beta) | {sabr_result.params.beta:.2f} | CEV exponent (0-1), fixed at 0.5 for this calibration |\n"
+        section += f"| ρ (rho) | {sabr_result.params.rho:.2f} | Correlation of model forward and volatility shocks; affects skew |\n"
+        section += f"| ν (nu) | {sabr_result.params.nu:.4f} | Volatility of volatility; affects smile curvature |\n\n"
         
         section += f"**Fit Error (RMSE):** {sabr_result.fit_error:.6f} "
         section += "*(lower is better - measures how well the model fits observed IV)*\n\n"
@@ -298,7 +336,7 @@ class Report:
                     sabr_strikes, sabr_ivs, sabr_result,
                     sabr_forward, sabr_time_to_expiry, str(chart_path)
                 )
-                section += f"![SABR Fit](assets/sabr_fit.png)\n\n"
+                section += f"![SABR Fit](assets/{assets_dir.name}/sabr_fit.png)\n\n"
             except Exception:
                 pass
 
@@ -315,11 +353,11 @@ class Report:
 - Uses OLS regression of stock excess returns against Fama-French research factors
 - Factors: Market (Mkt-RF), Value (HML), Size (SMB), Momentum (MOM)
 - Data Source: Ken French Data Library
-- R² values for individual stocks are typically low (0.01-0.20) — this is normal
+- R² describes the fitted sample; it does not measure forecast accuracy
 
 ### Correlation Anomalies
 - Rolling window: 30 trading days
-- Z-score threshold: ±2.0 (95% confidence interval)
+- Z-score threshold: ±2.0 (descriptive alert threshold; not a calibrated confidence interval)
 - Comparison universe: 40+ assets including ETFs, sector funds, and S&P 100 stocks
 - Anomalies indicate unusual co-movement, not necessarily causation
 
@@ -331,17 +369,16 @@ class Report:
 
 ### SABR Model
 - Calibrated to nearest available option expiry
-- β (beta) fixed at 0.5 for equity options (industry convention)
+- β (beta) fixed at 0.5 as a modeling choice
 - Parameters are point-in-time; the volatility surface changes daily
-- High fit error (RMSE > 0.05) may indicate poor data quality or illiquid options
+- Review residuals and quote quality; no universal RMSE cutoff or arbitrage check is applied
 
 ### Date Considerations
 - All dates in US/Eastern timezone
 - Trading days only (excludes weekends/holidays)
-- Minimum 60 trading days recommended for stable factor estimates
+- At least 30 valid aligned observations are required for factors; sample length alone does not establish stability
 
 ---
 
 *Report generated by Equity Factor Analysis*
 """
-

@@ -1,0 +1,9 @@
+event_name,event_date,event_time_et,timezone,source,source_url
+CPI,2024-12-11,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
+CPI,2024-11-13,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
+CPI,2024-10-10,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
+FOMC,2024-12-18,14:00,US/Eastern,Fed,https://www.federalreserve.gov/newsevents/pressreleases/monetary20241218a.htm
+FOMC,2024-11-07,14:00,US/Eastern,Fed,https://www.federalreserve.gov/newsevents/pressreleases/monetary20241107a.htm
+NFP,2024-12-06,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
+NFP,2024-11-01,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
+NFP,2024-10-04,08:30,US/Eastern,BLS,https://www.bls.gov/schedule/2024/home.htm
